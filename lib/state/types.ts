@@ -41,4 +41,5 @@ export interface SessionState {
     toolIdToIndexCache: Map<string, number> | null
     toolTokensCache: Map<string, number>
     prunableToolIdList: string[] | null
+    aggressivePruneExhausted: boolean
 }

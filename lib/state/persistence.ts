@@ -19,6 +19,7 @@ export interface PersistedSessionState {
     sessionName?: string
     prune: PersistedPrune
     stats: SessionStats
+    aggressivePruneExhausted?: boolean
     lastUpdated: string
 }
 
@@ -52,6 +53,7 @@ export async function saveSessionState(
                 toolIds: sessionState.prune.toolIds,
             },
             stats: sessionState.stats,
+            aggressivePruneExhausted: sessionState.aggressivePruneExhausted,
             lastUpdated: new Date().toISOString(),
         }
 

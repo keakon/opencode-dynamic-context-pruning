@@ -11,16 +11,14 @@ A \`<prunable-tools>\` list shows available IDs. Format: \`ID: tool, parameter\`
 - You need exact content for your CURRENT or NEXT action (e.g., editing a file, grepping for strings)
 
 ## Format
-- \`ids\`: Array of numeric ID strings from \`<prunable-tools>\`
-- \`distillation\`: Array of strings, one per ID (positional: distillation[0] for ids[0])
+- \`items\`: Array of [id, distillation] tuples. Each tuple pairs a numeric ID with its distilled content.
 
 Each distillation should capture essential info: signatures, logic, constraints, values.
 
 ## Example
 [Uses extract with:
-  ids: ["10", "11"],
-  distillation: [
-    "auth.ts: validateToken(token) -> User|null, checks cache (5min TTL) then OIDC. bcrypt 12 rounds. Tokens 128+ chars.",
-    "user.ts: User { id: string; email: string; permissions: ('read'|'write'|'admin')[]; status: 'active'|'suspended' }"
+  items: [
+    ["10", "auth.ts: validateToken(token) -> User|null, checks cache (5min TTL) then OIDC. bcrypt 12 rounds. Tokens 128+ chars."],
+    ["11", "user.ts: User { id: string; email: string; permissions: ('read'|'write'|'admin')[]; status: 'active'|'suspended' }"]
   ]
 ]`

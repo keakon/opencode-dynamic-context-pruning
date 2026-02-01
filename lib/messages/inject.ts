@@ -1,6 +1,7 @@
 import type { SessionState, WithParts } from "../state"
 import type { Logger } from "../logger"
 import type { PluginConfig } from "../config"
+import { PRUNABLE_TOOL_THRESHOLD } from "../config"
 import type { UserMessage } from "@opencode-ai/sdk/v2"
 import { getNudgePrompt } from "../prompts/nudge"
 import {
@@ -17,7 +18,7 @@ import { getLastUserMessage } from "../shared-utils"
 import { truncate } from "../ui/utils"
 import { getToolTokens } from "../strategies/utils"
 
-type NudgeUrgency = "none" | "normal" | "urgent" | "critical"
+type NudgeUrgency = "none" | "normal" | "warn" | "critical"
 
 const getNudgeString = (config: PluginConfig, urgency: NudgeUrgency): string => {
     if (urgency === "none") {
@@ -62,16 +63,30 @@ const getNudgeUrgency = (
 
     const tokens = state.stats.currentPrunableTokens
 
+    // Check if a non-token-based trigger is active (used to override exhausted state)
+    const isNonTokenTriggered =
+        (config.tools.settings.nudgeEnabled &&
+            state.nudgeCounter >= config.tools.settings.nudgeFrequency) ||
+        (config.tools.settings.nudgeEnabled && prunableToolCount >= PRUNABLE_TOOL_THRESHOLD)
+
     // Token-based urgency levels
-    if (tokens >= config.tokenBudget.softLimit) {
+    if (tokens >= config.tokenBudget.criticalThreshold) {
+        // If exhausted (previous prune couldn't reduce below threshold) and not counter-triggered, stay silent
+        if (state.aggressivePruneExhausted && !isNonTokenTriggered) {
+            return "none"
+        }
+        // Reset exhausted on non-token trigger (also reset in aggressivePrune when tokens drop)
+        if (isNonTokenTriggered) {
+            state.aggressivePruneExhausted = false
+        }
         return "critical"
     } else if (tokens >= config.tokenBudget.warnThreshold) {
-        return "urgent"
+        return "warn"
     }
 
-    // Tool count threshold (consistent with "5+ outputs" rule in system prompt)
+    // Tool count threshold (consistent with N+ outputs rule in system prompt)
     // This ensures nudge appears when there are enough tools to prune
-    if (config.tools.settings.nudgeEnabled && prunableToolCount >= 5) {
+    if (config.tools.settings.nudgeEnabled && prunableToolCount >= PRUNABLE_TOOL_THRESHOLD) {
         return "normal"
     }
 

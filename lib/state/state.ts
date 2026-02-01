@@ -75,6 +75,7 @@ export function createSessionState(): SessionState {
         toolIdToIndexCache: null,
         toolTokensCache: new Map(),
         prunableToolIdList: null,
+        aggressivePruneExhausted: false,
     }
 }
 
@@ -94,6 +95,7 @@ export function resetSessionState(state: SessionState): void {
     state.toolIdToIndexCache = fresh.toolIdToIndexCache
     state.toolTokensCache.clear()
     state.prunableToolIdList = fresh.prunableToolIdList
+    state.aggressivePruneExhausted = fresh.aggressivePruneExhausted
 }
 
 export async function ensureSessionInitialized(
@@ -135,6 +137,7 @@ export async function ensureSessionInitialized(
         totalPruneTokens: persisted.stats?.totalPruneTokens || 0,
         currentPrunableTokens: 0, // Recalculated on each turn
     }
+    state.aggressivePruneExhausted = persisted.aggressivePruneExhausted ?? false
 }
 
 function findLastCompactionTimestamp(messages: WithParts[]): number {

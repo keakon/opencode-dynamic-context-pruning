@@ -18,10 +18,10 @@ interface ToolTokenInfo {
  *
  * Two-tier approach:
  * 1. At warnThreshold: prune error/low-value tools first
- * 2. At hardLimit: prune oldest tools regardless of type
+ * 2. At criticalThreshold: prune oldest tools regardless of type
  *
- * This ensures low-value content is cleaned up early while preserving
- * potentially valuable outputs until absolutely necessary.
+ * Both tiers target warnThreshold as the goal, providing a 40k buffer.
+ * Sets aggressivePruneExhausted flag if still above criticalThreshold after pruning.
  */
 export const aggressivePrune = (
     state: SessionState,
@@ -84,12 +84,12 @@ export const aggressivePrune = (
         return
     }
 
-    const { warnThreshold, softLimit, hardLimit } = config.tokenBudget
+    const { warnThreshold, criticalThreshold } = config.tokenBudget
     const toPrune: string[] = []
     let remainingTokens = totalTokens
 
     // Tier 1: At warnThreshold, prune error tools first (low-value cleanup)
-    if (totalTokens > warnThreshold) {
+    if (totalTokens >= warnThreshold) {
         const errorTools = toolTokenInfos.filter((t) => t.isError)
         if (errorTools.length > 0) {
             // Sort error tools by index (oldest first)
@@ -99,7 +99,7 @@ export const aggressivePrune = (
                 toPrune.push(info.id)
                 remainingTokens -= info.tokens
                 // Stop if we're below warnThreshold
-                if (remainingTokens <= warnThreshold) {
+                if (remainingTokens < warnThreshold) {
                     break
                 }
             }
@@ -113,10 +113,10 @@ export const aggressivePrune = (
         }
     }
 
-    // Tier 2: At hardLimit, prune oldest tools until below softLimit
-    if (remainingTokens > hardLimit) {
+    // Tier 2: At criticalThreshold, prune oldest tools until below warnThreshold
+    if (remainingTokens >= criticalThreshold) {
         logger.info(
-            `Aggressive prune triggered: ${remainingTokens} tokens > ${hardLimit} hardLimit`,
+            `Aggressive prune triggered: ${remainingTokens} tokens >= ${criticalThreshold} criticalThreshold`,
         )
 
         // Get remaining (non-error or not yet pruned) tools
@@ -127,13 +127,17 @@ export const aggressivePrune = (
         remainingTools.sort((a, b) => a.index - b.index)
 
         for (const info of remainingTools) {
-            if (remainingTokens <= softLimit) {
+            if (remainingTokens < warnThreshold) {
                 break
             }
             toPrune.push(info.id)
             remainingTokens -= info.tokens
         }
     }
+
+    // Set exhausted flag if still above criticalThreshold after pruning.
+    // Note: also reset in getNudgeUrgency() when non-token triggers fire.
+    state.aggressivePruneExhausted = remainingTokens >= criticalThreshold
 
     if (toPrune.length > 0) {
         const tokensFreed = totalTokens - remainingTokens

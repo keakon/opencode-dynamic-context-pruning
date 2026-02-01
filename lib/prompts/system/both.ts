@@ -1,3 +1,5 @@
+import { PRUNABLE_TOOL_THRESHOLD } from "../../config"
+
 export const SYSTEM_PROMPT_BOTH = `<system-reminder>
 <instruction name=context_management_protocol policy_level=critical>
 
@@ -29,8 +31,8 @@ If either condition is false → prune (discard or extract).
 
 MANDATORY ACTION TRIGGERS
 
-The "5+ outputs" rule — you SHOULD act on it:
-- 5+ outputs in \`<prunable-tools>\` list → SHOULD prune at least some before continuing
+The "${PRUNABLE_TOOL_THRESHOLD}+ outputs" rule — you SHOULD act on it:
+- ${PRUNABLE_TOOL_THRESHOLD}+ outputs in \`<prunable-tools>\` list → SHOULD prune at least some before continuing
 - Nudge appears → MUST prune immediately
 
 PRUNING DURING MULTI-FILE OPERATIONS
@@ -43,7 +45,7 @@ Immediate discard (don't wait):
 
 For correlated analysis (e.g., analyzing a commit, understanding a module):
 - You MAY keep related files until analysis is complete
-- BUT if list reaches 5+: extract key findings from earlier files to make room
+- BUT if list reaches ${PRUNABLE_TOOL_THRESHOLD}+: extract key findings from earlier files to make room
 - After completing analysis: MUST extract cross-file insights, then discard all raw content
 
 Key principle:

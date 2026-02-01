@@ -53,8 +53,7 @@ export interface TurnProtection {
 export interface TokenBudget {
     enabled: boolean
     warnThreshold: number
-    softLimit: number
-    hardLimit: number
+    criticalThreshold: number
 }
 
 export interface PluginConfig {
@@ -86,6 +85,12 @@ const DEFAULT_PROTECTED_TOOLS = [
     "plan_exit",
 ]
 
+/**
+ * Threshold for triggering normal nudge based on prunable tool count.
+ * This value is also used in system prompts (N+ outputs rule).
+ */
+export const PRUNABLE_TOOL_THRESHOLD = 8
+
 // Valid config keys for validation against user config
 export const VALID_CONFIG_KEYS = new Set([
     // Top-level keys
@@ -100,8 +105,7 @@ export const VALID_CONFIG_KEYS = new Set([
     "tokenBudget",
     "tokenBudget.enabled",
     "tokenBudget.warnThreshold",
-    "tokenBudget.softLimit",
-    "tokenBudget.hardLimit",
+    "tokenBudget.criticalThreshold",
     "protectedFilePatterns",
     "commands",
     "commands.enabled",
@@ -230,7 +234,7 @@ function validateConfigTypes(config: Record<string, any>): ValidationError[] {
                 actual: typeof config.tokenBudget.enabled,
             })
         }
-        const thresholdKeys = ["warnThreshold", "softLimit", "hardLimit"] as const
+        const thresholdKeys = ["warnThreshold", "criticalThreshold"] as const
         for (const key of thresholdKeys) {
             if (
                 config.tokenBudget[key] !== undefined &&
@@ -242,6 +246,20 @@ function validateConfigTypes(config: Record<string, any>): ValidationError[] {
                     actual: typeof config.tokenBudget[key],
                 })
             }
+        }
+
+        // Validate threshold monotonicity: warnThreshold ≤ criticalThreshold
+        const { warnThreshold, criticalThreshold } = config.tokenBudget
+        if (
+            typeof warnThreshold === "number" &&
+            typeof criticalThreshold === "number" &&
+            warnThreshold > criticalThreshold
+        ) {
+            errors.push({
+                key: "tokenBudget.warnThreshold",
+                expected: "≤ criticalThreshold",
+                actual: `${warnThreshold} > ${criticalThreshold}`,
+            })
         }
     }
 
@@ -474,15 +492,14 @@ const defaultConfig: PluginConfig = {
     },
     tokenBudget: {
         enabled: true,
-        warnThreshold: 30000,
-        softLimit: 80000,
-        hardLimit: 100000,
+        warnThreshold: 60000,
+        criticalThreshold: 100000,
     },
     protectedFilePatterns: [],
     tools: {
         settings: {
             nudgeEnabled: true,
-            nudgeFrequency: 5,
+            nudgeFrequency: 10,
             protectedTools: [...DEFAULT_PROTECTED_TOOLS],
         },
         discard: {
@@ -688,8 +705,7 @@ function mergeTokenBudget(
     return {
         enabled: override.enabled ?? base.enabled,
         warnThreshold: override.warnThreshold ?? base.warnThreshold,
-        softLimit: override.softLimit ?? base.softLimit,
-        hardLimit: override.hardLimit ?? base.hardLimit,
+        criticalThreshold: override.criticalThreshold ?? base.criticalThreshold,
     }
 }
 

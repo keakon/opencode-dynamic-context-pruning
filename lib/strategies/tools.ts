@@ -145,22 +145,15 @@ export function createExtractTool(ctx: PruneToolContext): ReturnType<typeof tool
     return tool({
         description: EXTRACT_TOOL_DESCRIPTION,
         args: {
-            ids: tool.schema
-                .array(tool.schema.string())
+            items: tool.schema
+                .array(tool.schema.tuple([tool.schema.string(), tool.schema.string()]))
                 .min(1)
-                .describe("Numeric IDs from <prunable-tools> to extract"),
-            distillation: tool.schema
-                .array(tool.schema.string())
-                .min(1)
-                .describe("Distilled content for each ID (positional: distillation[0] for ids[0])"),
+                .describe("Array of [id, distillation] tuples from <prunable-tools>"),
         },
         async execute(args, toolCtx) {
-            if (args.ids.length !== args.distillation.length) {
-                throw new Error(
-                    `IDs and distillation must match: ${args.ids.length} IDs, ${args.distillation.length} distillations.`,
-                )
-            }
-            return executePruneOperation(ctx, toolCtx, args.ids, "Extract", args.distillation)
+            const ids = args.items.map(([id]) => id)
+            const distillation = args.items.map(([, dist]) => dist)
+            return executePruneOperation(ctx, toolCtx, ids, "Extract", distillation)
         },
     })
 }

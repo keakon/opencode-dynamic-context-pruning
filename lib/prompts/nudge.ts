@@ -1,5 +1,5 @@
 type NudgeMode = "both" | "discard" | "extract"
-type NudgeUrgency = "normal" | "urgent" | "critical"
+type NudgeUrgency = "normal" | "warn" | "critical"
 
 const NUDGE_PROMPTS: Record<NudgeMode, Record<NudgeUrgency, string>> = {
     both: {
@@ -8,7 +8,7 @@ Context is filling with tool outputs. You SHOULD prune before taking more action
 1. Use \`discard\` for noise or completed work with no value.
 2. Use \`extract\` when you must preserve key details.
 </instruction>`,
-        urgent: `<instruction name=context_management_urgent priority=high>
+        warn: `<instruction name=context_management_warn priority=high>
 WARNING: Context usage is high. You SHOULD prune immediately after completing the current action.
 - Use \`discard\` for any outputs you no longer need verbatim.
 - Use \`extract\` to preserve key findings before removing raw content.
@@ -25,7 +25,7 @@ Do not ignore this warning. Context overflow will severely impact performance.
         normal: `<instruction name=context_management_required>
 Context is filling with tool outputs. You SHOULD discard noise and completed work that has no further value before taking more actions.
 </instruction>`,
-        urgent: `<instruction name=context_management_urgent priority=high>
+        warn: `<instruction name=context_management_warn priority=high>
 WARNING: Context usage is high. You SHOULD discard outputs immediately after completing the current action.
 Failure to discard will degrade response quality.
 </instruction>`,
@@ -39,7 +39,7 @@ Do not ignore this warning. Context overflow will severely impact performance.
         normal: `<instruction name=context_management_required>
 Context is filling with tool outputs. You SHOULD extract key findings and remove the raw outputs before taking more actions.
 </instruction>`,
-        urgent: `<instruction name=context_management_urgent priority=high>
+        warn: `<instruction name=context_management_warn priority=high>
 WARNING: Context usage is high. You SHOULD extract key findings and remove raw outputs immediately after completing the current action.
 Failure to extract will degrade response quality.
 </instruction>`,

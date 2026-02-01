@@ -54,7 +54,7 @@ Dynamic Context Pruning (DCP) 是 OpenCode AI 编辑器的插件，通过智能�
 |------|------|
 | 分层处理 | 低风险自动处理，高风险 AI 参与 |
 | 最小伤害 | 优先删除低价值内容（错误、重复） |
-| 生存优先 | 接近硬限制时强制裁剪，保护最新内容 |
+| 用户优先 | 不强制裁剪，决策权在用户/AI |
 | 幂等安全 | 重复操作不产生副作用 |
 
 ---
@@ -171,6 +171,7 @@ SessionState {
   nudgeCounter           # 提示频率计数器
   currentTurn            # 当前轮数（用于 turnProtection）
   lastCompaction         # 最后压缩时间戳
+  aggressivePruneExhausted  # 激进裁剪后仍超标的抑制标志
 
   # 性能缓存
   toolIdListCache        # 所有工具 ID 列表
@@ -189,7 +190,7 @@ SessionState {
 createSessionState()          loadSessionState()
    │                                  │
    ├─ 初始化空状态                    ├─ 从磁盘加载
-   └─ 检测子代理                      └─ 恢复 prune.toolIds 和 stats
+   └─ 检测子代理                      └─ 恢复 prune.toolIds、stats 和 exhausted
 
 压缩事件检测                     保存状态
    │                                  │
@@ -235,12 +236,13 @@ ToolParameterEntry {
 
 | 配置 | 默认值 | 说明 |
 |------|--------|------|
-| `tokenBudget.warnThreshold` | 30000 | 开始提示 AI 裁剪的阈值 |
-| `tokenBudget.softLimit` | 80000 | 激进裁剪的目标值 |
-| `tokenBudget.hardLimit` | 100000 | 强制裁剪的触发点 |
-| `tools.settings.nudgeFrequency` | 5 | 每 N 个工具后提示一次 |
+| `tokenBudget.warnThreshold` | 60000 | warn 警告阈值，触发 Tier1 (error 工具清理)，同时也是所有裁剪的目标线 |
+| `tokenBudget.criticalThreshold` | 100000 | critical 警告阈值，触发 Tier2 (激进裁剪) |
+| `tools.settings.nudgeFrequency` | 10 | 每 N 个工具后提示一次（备用机制） |
 | `turnProtection.turns` | 4 | 新工具的保护轮数 |
 | `strategies.purgeErrors.turns` | 4 | 错误工具的保留轮数 |
+
+**阈值约束**：`warnThreshold ≤ criticalThreshold`，配置加载时会验证此约束。
 
 #### 默认保护工具列表
 
@@ -274,7 +276,7 @@ batch, write, edit, plan_enter, plan_exit
 1. **默认行为是删除**：保留是例外，不是规则
 2. **明确的删除条件**：噪音、错误、过时内容立即删除
 3. **明确的保留条件**：必须同时满足"正在多步编辑"和"需要精确内容"
-4. **5+ 规则**：可裁剪列表达到 5 个以上时应该主动裁剪
+4. **N+ 规则**：可裁剪列表达到 `PRUNABLE_TOOL_THRESHOLD`（默认 8）个以上时应该主动裁剪
 5. **静默处理**：不在回复中提及裁剪相关信息
 
 #### 提示消息 (Nudge)
@@ -283,9 +285,15 @@ batch, write, edit, plan_enter, plan_exit
 
 | 级别 | 触发条件 | 语气 |
 |------|----------|------|
-| normal | 5+ 工具 或 频率触发 | SHOULD prune |
-| urgent | >= 30k tokens | WARNING... SHOULD prune immediately |
-| critical | >= 80k tokens | CRITICAL... MUST prune NOW |
+| normal | N+ 工具（N = PRUNABLE_TOOL_THRESHOLD）或 频率触发 | SHOULD prune |
+| warn | >= 60k tokens (warnThreshold) | WARNING... SHOULD prune immediately |
+| critical | >= 100k tokens (criticalThreshold) | CRITICAL... MUST prune NOW |
+
+**设计理念**：系统不自动强制裁剪（自动策略除外），裁剪决策权在 AI：
+- 能力下降 ≠ 不可用，某些长任务确实需要超长上下文
+- 超过 100k 时触发 critical + 激进裁剪，但如果裁剪后仍超标则不持续警告
+- 后续轮次静默，直到计数器触发时再次提醒，避免干扰超长任务
+- OpenCode 会话压缩作为系统级兜底机制
 
 ---
 
@@ -327,6 +335,8 @@ batch, write, edit, plan_enter, plan_exit
 
 ### 5.3 超写覆盖策略 (SupersedeWrites)
 
+**默认状态**：启用
+
 **原理**：write/edit 后又 read 同一文件，write 的输入内容已被 read 结果覆盖
 
 **实现逻辑**：
@@ -359,26 +369,27 @@ batch, write, edit, plan_enter, plan_exit
 
 ### 5.5 激进裁剪策略 (AggressivePrune)
 
-**原理**：基于 token 预算的两层自动裁剪，确保上下文不会溢出
+**原理**：基于 token 预算自动裁剪内容，减轻 AI 手动裁剪负担
 
-**两层逻辑**：
+**两层裁剪逻辑**：
 
 ```
-Tier 1: 达到 warnThreshold (30k)
-├─ 只删除错误工具（最低价值）
+第一层（Tier1）：达到 warnThreshold (60k) 时
+├─ 只删除 error 工具（最低价值）
 ├─ 按时间顺序，最旧的先删
 └─ 目标：降到 warnThreshold 以下
 
-Tier 2: 达到 hardLimit (100k)
-├─ 删除所有类型的工具
+第二层（Tier2）：达到 criticalThreshold (100k) 时
+├─ 删除所有旧工具（不限类型）
 ├─ 按时间顺序，最旧的先删
-└─ 目标：降到 softLimit (80k)
+└─ 目标：降到 warnThreshold 以下（统一目标线）
 ```
 
 **设计考量**：
-- Tier 1 最小伤害：只删低价值内容
-- Tier 2 生存优先：接近临界点必须强制削减
+- 渐进式响应：先删低价值内容，必要时再删所有
+- 统一目标线：Tier1 和 Tier2 都削减到 warnThreshold，提供 40k 缓冲空间
 - 时序优先：最新内容通常更相关
+- 职责分离：DCP 负责智能裁剪，OpenCode 会话压缩作为兜底机制
 
 ### 5.6 AI 工具：discard 与 extract
 
@@ -401,9 +412,11 @@ Tier 2: 达到 hardLimit (100k)
 - 大输出中只有部分相关
 - 将来可能引用但不需要原文
 
-**distillation 格式要求**：
-- 每个 ID 对应一个 distillation 条目（位置对应）
-- 应捕获关键信息：签名、逻辑、约束、值
+**参数格式**：
+使用元组数组 `[[id, distillation], ...]` 而非分离的两个数组，优势：
+- ID 和摘要绑定在一起，无法出现数量不匹配
+- 更省 token（无重复键名开销）
+- 符合 AI 边分析边记录的工作流
 
 ---
 
@@ -414,55 +427,86 @@ Tier 2: 达到 hardLimit (100k)
 ```
                     Token 预算触发（主要）
                            │
-        ┌──────────────────┼──────────────────┐
-        ▼                  ▼                  ▼
-   warnThreshold      softLimit          hardLimit
-     (30k)             (80k)              (100k)
-        │                  │                  │
-        ▼                  ▼                  ▼
-   urgent 提示        critical 提示      强制自动裁剪
-   Tier1 激进裁剪                       Tier2 激进裁剪
-   (仅删错误)                           (删到 softLimit)
+              ┌────────────┴────────────┐
+              ▼                         ▼
+        warnThreshold            criticalThreshold
+            (60k)                     (100k)
+              │                         │
+              ▼                         ▼
+         warn 提示               critical 提示
+        Tier1 裁剪                Tier2 裁剪
+        (仅 error 工具)          (所有旧工具)
+              │                         │
+              ▼                         ▼
+        目标: < 60k               目标: < 60k
+                                        │
+                                        ▼
+                                裁剪后仍 >= 100k?
+                                        │
+                              ┌─────────┴─────────┐
+                              ▼                   ▼
+                             否                   是
+                              │                   │
+                              ▼                   ▼
+                          正常流程           标记 exhausted
+                                                  │
+                                                  ▼
+                                        后续轮次静默，直到
+                                        计数器触发时再提醒
 
 
                     计数器触发（备用）
                            │
         ┌──────────────────┼──────────────────┐
         ▼                  ▼                  ▼
-   nudgeFrequency     5+ 工具数          discard/extract
-      (每5个)           阈值               调用后
+   nudgeFrequency     N+ 工具数          discard/extract
+      (每10个)           阈值               调用后
         │                  │                  │
         ▼                  ▼                  ▼
    normal 提示        normal 提示         重置计数器
+  (或 critical        重置 exhausted
+   若 exhausted)
 ```
 
 ### 6.2 提示紧急度决策流程
 
 ```
 1. 如果 tokenBudget 启用：
-   ├─ currentPrunableTokens >= softLimit  → critical
-   ├─ currentPrunableTokens >= warnThreshold  → urgent
-   ├─ prunableToolCount >= 5  → normal
+   ├─ currentPrunableTokens >= criticalThreshold (100k)
+   │    ├─ 如果 exhausted 且非计数器触发  → none（静默）
+   │    └─ 否则  → critical
+   ├─ currentPrunableTokens >= warnThreshold (60k)  → warn
+   ├─ prunableToolCount >= PRUNABLE_TOOL_THRESHOLD  → normal
    └─ nudgeCounter >= nudgeFrequency  → normal
 
 2. 如果 tokenBudget 禁用：
    └─ nudgeCounter >= nudgeFrequency  → normal
 
 3. 其他情况 → none（不提示）
+
+exhausted 状态：
+- 设置：激进裁剪 Tier2 执行后，remainingTokens >= criticalThreshold
+- 重置：tokens 降到 criticalThreshold 以下，或计数器触发时
 ```
 
 ### 6.3 阈值设计原理
 
 | 阈值 | 值 | 设计原理 |
 |------|-----|----------|
-| warnThreshold | 30k | 预留 70k 缓冲区，有充足响应时间 |
-| softLimit | 80k | 激进裁剪目标，留 20k 给后续操作 |
-| hardLimit | 100k | 接近模型能力临界点，必须强制削减 |
+| warnThreshold | 60k | 中等任务刚好触及，触发 warn + Tier1 (error 工具清理)，同时也是所有裁剪的统一目标线 |
+| criticalThreshold | 100k | 业界共识的能力下降点，触发 critical + Tier2 (激进裁剪) |
 
-**为什么选择 100k**：
-- 大多数模型在 100k+ 后能力显著下降
-- 响应延迟增加
-- 注意力分散，容易遗漏信息
+**抑制机制**：
+- 超过 100k 时首次触发 critical + 激进裁剪
+- 如果裁剪后仍超标（可裁剪内容不足），标记 exhausted
+- 后续轮次静默，直到计数器触发时再次提醒
+- 避免频繁干扰超长任务（100k-200k 场景）
+
+**为什么不持续警告**：
+- 能力下降 ≠ 不可用，100k+ 只是效率降低
+- 某些复杂任务（大型重构、长链分析）确实需要超长上下文
+- OpenCode 自带会话压缩作为系统级兜底机制
+- 强制裁剪可能删除用户正在使用的内容，违反用户优先原则
 
 ---
 
@@ -505,7 +549,7 @@ Tier 2: 达到 hardLimit (100k)
 **输入验证**：
 - ID 必须是数字字符串
 - ID 必须在快照范围内
-- extract 的 IDs 和 distillation 数量必须匹配
+- extract 的 IDs 和 distillation 通过元组绑定，结构上保证匹配
 - extract 不允许重复 ID
 
 **幂等性保证**：
@@ -575,9 +619,10 @@ Tier 2: 达到 hardLimit (100k)
 
 | 决策 | 选项 | 选择 | 原因 |
 |------|------|------|------|
-| warnThreshold | 20k/30k/50k | 30k | 平衡提示频率与缓冲时间 |
-| softLimit | 60k/80k/90k | 80k | 留足空间给后续操作 |
-| hardLimit | 80k/100k/120k | 100k | 接近但不超过能力临界点 |
+| warnThreshold | 30k/50k/60k | 60k | 给中等任务更多空间，减少打扰，同时作为统一目标线 |
+| criticalThreshold | 80k/100k/120k | 100k | 业界共识的能力下降点 |
+| nudgeFrequency | 5/8/10 | 10 | token 预算是主要机制，计数器只是备用 |
+| prunableToolCount | 5/8/10 | 8 | 8 个工具约 8k-16k tokens，更有意义（定义为 `PRUNABLE_TOOL_THRESHOLD` 常量） |
 
 ### 9.2 策略优先级
 
@@ -609,16 +654,35 @@ Tier 2: 达到 hardLimit (100k)
 
 **取舍**：额外内存占用，但正确性是第一位
 
-### 9.5 渐进式提示
+### 9.5 渐进式提示（系统不自动强制）
 
-**选择**：normal → urgent → critical 三级提示
+**选择**：normal → warn → critical 三级提示，系统不自动强制裁剪
 
 **原因**：
-- 避免过早强制导致用户体验差
-- 给 AI 机会自主决策
-- 只在紧急时强制干预
+- 避免系统自动删除用户正在使用的内容
+- AI 根据 MUST/SHOULD 指令强度自主决策
+- OpenCode 会话压缩作为系统级兜底，DCP 无需越界
 
-### 9.6 extract vs 仅 discard
+### 9.6 extract 参数使用元组数组
+
+**选择**：`[[id, distillation], ...]` 而非分离的 `ids[]` 和 `distillation[]`
+
+**原因**：
+- 结构上保证 ID 和摘要一一对应，无法不匹配
+- 更省 token（无重复键名）
+- 符合 AI 边分析边记录的工作流
+
+**对比**：
+```
+// 分离数组 - 容易数量不匹配
+ids: ["0", "1", "2"]
+distillation: ["摘要1", "摘要2"]  // 少了一个！
+
+// 元组数组 - 绑定在一起
+[["0", "摘要1"], ["1", "摘要2"], ["2", "摘要3"]]
+```
+
+### 9.7 extract vs 仅 discard
 
 **选择**：提供两种工具而非只有删除
 
@@ -651,9 +715,8 @@ Tier 2: 达到 hardLimit (100k)
 
 ```
 tokenBudget: {
-  warnThreshold: 30000,  // 警告阈值
-  softLimit: 80000,      // 软限制
-  hardLimit: 100000,     // 硬限制
+  warnThreshold: 60000,       // warn 警告阈值，触发 Tier1，同时也是统一目标线
+  criticalThreshold: 100000,  // critical 警告阈值，触发 Tier2
 }
 ```
 
@@ -690,9 +753,14 @@ tokenBudget: {
 | 工具没被裁剪 | 受保护 | 检查 protectedTools 和 protectedFilePatterns |
 | ID 无效错误 | 快照过期 | 检查是否有新消息导致 ID 偏移 |
 | 提示太频繁 | 阈值太低 | 调整 warnThreshold 或 nudgeFrequency |
-| 上下文仍溢出 | hardLimit 太高 | 降低 hardLimit |
+| 上下文过大 | 需要手动裁剪 | 使用 discard/extract 或等待会话压缩 |
 
-### 10.6 性能优化点
+### 10.6 已知优化方向
+
+1. **config.ts 合并函数抽象**：`mergeStrategies`、`mergeTools`、`mergeCommands`、`mergeTokenBudget` 模式重复，可抽象为通用 deep merge + protectedTools 数组合并
+2. **config.ts 验证简化**：`validateConfigTypes` 对每个字段逐一验证（约 250 行），可用泛型验证函数大幅精简
+
+### 10.7 性能优化点
 
 1. **缓存利用**：toolIdListCache、toolTokensCache 减少重复计算
 2. **Set 查找**：toolIdSet 提供 O(1) 查找
