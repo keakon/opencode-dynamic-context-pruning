@@ -2,7 +2,7 @@ import type { SessionState, WithParts } from "../state"
 import type { Logger } from "../logger"
 import type { PluginConfig } from "../config"
 import type { UserMessage } from "@opencode-ai/sdk/v2"
-import { loadPrompt } from "../prompts"
+import { getNudgePrompt } from "../prompts/nudge"
 import {
     extractParameterKey,
     buildToolIdList,
@@ -15,43 +15,81 @@ import {
 import { isToolCallProtected } from "../protected-file-patterns"
 import { getLastUserMessage } from "../shared-utils"
 import { truncate } from "../ui/utils"
+import { getToolTokens } from "../strategies/utils"
 
-const getNudgeString = (config: PluginConfig): string => {
+type NudgeUrgency = "none" | "normal" | "urgent" | "critical"
+
+const getNudgeString = (config: PluginConfig, urgency: NudgeUrgency): string => {
+    if (urgency === "none") {
+        return ""
+    }
+
     const discardEnabled = config.tools.discard.enabled
     const extractEnabled = config.tools.extract.enabled
 
+    let mode: "both" | "discard" | "extract"
     if (discardEnabled && extractEnabled) {
-        return loadPrompt(`nudge/nudge-both`)
+        mode = "both"
     } else if (discardEnabled) {
-        return loadPrompt(`nudge/nudge-discard`)
+        mode = "discard"
     } else if (extractEnabled) {
-        return loadPrompt(`nudge/nudge-extract`)
+        mode = "extract"
+    } else {
+        return ""
     }
-    return ""
+
+    return getNudgePrompt(mode, urgency)
+}
+
+/**
+ * Determine nudge urgency based on token budget thresholds and tool count.
+ */
+const getNudgeUrgency = (
+    state: SessionState,
+    config: PluginConfig,
+    prunableToolCount: number,
+): NudgeUrgency => {
+    if (!config.tokenBudget.enabled) {
+        // Fallback to counter-based nudge
+        if (
+            config.tools.settings.nudgeEnabled &&
+            state.nudgeCounter >= config.tools.settings.nudgeFrequency
+        ) {
+            return "normal"
+        }
+        return "none"
+    }
+
+    const tokens = state.stats.currentPrunableTokens
+
+    // Token-based urgency levels
+    if (tokens >= config.tokenBudget.softLimit) {
+        return "critical"
+    } else if (tokens >= config.tokenBudget.warnThreshold) {
+        return "urgent"
+    }
+
+    // Tool count threshold (consistent with "5+ outputs" rule in system prompt)
+    // This ensures nudge appears when there are enough tools to prune
+    if (config.tools.settings.nudgeEnabled && prunableToolCount >= 5) {
+        return "normal"
+    }
+
+    // Below thresholds, use counter-based nudge as fallback
+    if (
+        config.tools.settings.nudgeEnabled &&
+        state.nudgeCounter >= config.tools.settings.nudgeFrequency
+    ) {
+        return "normal"
+    }
+
+    return "none"
 }
 
 const wrapPrunableTools = (content: string): string => `<prunable-tools>
 The following tools are available for pruning. Only IDs listed here are valid.
 ${content}
 </prunable-tools>`
-
-const getCooldownMessage = (config: PluginConfig): string => {
-    const discardEnabled = config.tools.discard.enabled
-    const extractEnabled = config.tools.extract.enabled
-
-    let toolName: string
-    if (discardEnabled && extractEnabled) {
-        toolName = "discard or extract tools"
-    } else if (discardEnabled) {
-        toolName = "discard tool"
-    } else {
-        toolName = "extract tool"
-    }
-
-    return `<prunable-tools>
-Context management was just performed. Do not use the ${toolName} again. A fresh list will be available after your next tool use.
-</prunable-tools>`
-}
 
 const buildPrunableToolsList = (
     state: SessionState,
@@ -97,6 +135,11 @@ const buildPrunableToolsList = (
             continue
         }
 
+        // Skip tools with no prunable content (content too short to be worth pruning)
+        if (getToolTokens(state, messages, toolCallId) === 0) {
+            continue
+        }
+
         const paramKey = extractParameterKey(toolParameterEntry.tool, toolParameterEntry.parameters)
         prunableEntries.push({
             id: toolCallId,
@@ -107,7 +150,7 @@ const buildPrunableToolsList = (
     }
 
     if (prunableEntries.length === 0) {
-        state.prunableToolIdList = null // Clear stale snapshot
+        state.prunableToolIdList = [] // Empty array indicates "checked but none available"
         return ""
     }
 
@@ -140,30 +183,22 @@ export const insertPruneToolContext = (
         return
     }
 
-    let prunableToolsContent: string
-
-    if (state.lastToolPrune) {
-        logger.debug("Last tool was prune - injecting cooldown message")
-        prunableToolsContent = getCooldownMessage(config)
-    } else {
-        const prunableToolsList = buildPrunableToolsList(state, config, logger, messages)
-        if (!prunableToolsList) {
-            return
-        }
-
-        logger.debug("prunable-tools: \n" + prunableToolsList)
-
-        let nudgeString = ""
-        if (
-            config.tools.settings.nudgeEnabled &&
-            state.nudgeCounter >= config.tools.settings.nudgeFrequency
-        ) {
-            logger.info("Inserting prune nudge message")
-            nudgeString = "\n" + getNudgeString(config)
-        }
-
-        prunableToolsContent = prunableToolsList + nudgeString
+    const prunableToolsList = buildPrunableToolsList(state, config, logger, messages)
+    if (!prunableToolsList) {
+        return
     }
+
+    logger.debug("prunable-tools: \n" + prunableToolsList)
+
+    const prunableToolCount = state.prunableToolIdList?.length ?? 0
+    const nudgeUrgency = getNudgeUrgency(state, config, prunableToolCount)
+    let nudgeString = ""
+    if (nudgeUrgency !== "none") {
+        logger.info(`Inserting prune nudge message (urgency: ${nudgeUrgency})`)
+        nudgeString = "\n" + getNudgeString(config, nudgeUrgency)
+    }
+
+    const prunableToolsContent = prunableToolsList + nudgeString
 
     const lastUserMessage = getLastUserMessage(messages)
     if (!lastUserMessage) {

@@ -8,8 +8,7 @@ A \`<prunable-tools>\` list shows available IDs. Format: \`ID: tool, parameter\`
 - Raw output too large but contains valuable details
 
 ## When NOT to Use
-- You need exact syntax (e.g., will edit the file or grep for strings)
-- Uncertain whether you'll need the raw output
+- You need exact content for your CURRENT or NEXT action (e.g., editing a file, grepping for strings)
 
 ## Format
 - \`ids\`: Array of numeric ID strings from \`<prunable-tools>\`

@@ -58,6 +58,55 @@ export function getUnprunedToolIds(state: SessionState, messages: WithParts[]): 
     return unprunedIds.length > 0 ? unprunedIds : null
 }
 
+/**
+ * Calculates token count for a single tool call.
+ * Returns 0 if the tool has no prunable content.
+ */
+export function getToolTokens(state: SessionState, messages: WithParts[], toolId: string): number {
+    const cached = state.toolTokensCache.get(toolId)
+    if (cached !== undefined) return cached
+
+    const tokens = computeToolTokens(state, messages, toolId)
+    state.toolTokensCache.set(toolId, tokens)
+    return tokens
+}
+
+function computeToolTokens(state: SessionState, messages: WithParts[], toolId: string): number {
+    for (const msg of messages) {
+        if (isMessageCompacted(state, msg)) {
+            continue
+        }
+        const parts = Array.isArray(msg.parts) ? msg.parts : []
+        for (const part of parts) {
+            if (part.type !== "tool" || part.callID !== toolId) {
+                continue
+            }
+            if (part.state.status === "completed") {
+                if (part.tool === "question") {
+                    const content = getPrunableContent(part.state.input?.questions, PRUNED_QUESTIONS)
+                    return content ? countTokens(content) : 0
+                } else {
+                    const content = getPrunableContent(part.state.output, PRUNED_OUTPUT)
+                    return content ? countTokens(content) : 0
+                }
+            } else if (part.state.status === "error") {
+                const input = part.state.input
+                if (input && typeof input === "object") {
+                    let tokens = 0
+                    for (const value of Object.values(input)) {
+                        const content = getPrunableContent(value, PRUNED_INPUT)
+                        if (content) {
+                            tokens += countTokens(content)
+                        }
+                    }
+                    return tokens
+                }
+            }
+        }
+    }
+    return 0
+}
+
 export const calculateTokensSaved = (
     state: SessionState,
     messages: WithParts[],
@@ -67,41 +116,9 @@ export const calculateTokensSaved = (
         return 0
     }
     try {
-        const pruneToolIdSet = new Set(pruneToolIds)
         let totalTokens = 0
-        for (const msg of messages) {
-            if (isMessageCompacted(state, msg)) {
-                continue
-            }
-            const parts = Array.isArray(msg.parts) ? msg.parts : []
-            for (const part of parts) {
-                if (part.type !== "tool" || !pruneToolIdSet.has(part.callID)) {
-                    continue
-                }
-                if (part.state.status === "completed") {
-                    if (part.tool === "question") {
-                        const content = getPrunableContent(part.state.input?.questions, PRUNED_QUESTIONS)
-                        if (content) {
-                            totalTokens += countTokens(content)
-                        }
-                    } else {
-                        const content = getPrunableContent(part.state.output, PRUNED_OUTPUT)
-                        if (content) {
-                            totalTokens += countTokens(content)
-                        }
-                    }
-                } else if (part.state.status === "error") {
-                    const input = part.state.input
-                    if (input && typeof input === "object") {
-                        for (const value of Object.values(input)) {
-                            const content = getPrunableContent(value, PRUNED_INPUT)
-                            if (content) {
-                                totalTokens += countTokens(content)
-                            }
-                        }
-                    }
-                }
-            }
+        for (const id of pruneToolIds) {
+            totalTokens += getToolTokens(state, messages, id)
         }
         return totalTokens
     } catch {

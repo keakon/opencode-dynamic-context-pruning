@@ -50,12 +50,20 @@ export interface TurnProtection {
     turns: number
 }
 
+export interface TokenBudget {
+    enabled: boolean
+    warnThreshold: number
+    softLimit: number
+    hardLimit: number
+}
+
 export interface PluginConfig {
     enabled: boolean
     debug: boolean
     pruneNotification: "off" | "minimal" | "detailed"
     commands: Commands
     turnProtection: TurnProtection
+    tokenBudget: TokenBudget
     protectedFilePatterns: string[]
     tools: Tools
     strategies: {
@@ -89,6 +97,11 @@ export const VALID_CONFIG_KEYS = new Set([
     "turnProtection",
     "turnProtection.enabled",
     "turnProtection.turns",
+    "tokenBudget",
+    "tokenBudget.enabled",
+    "tokenBudget.warnThreshold",
+    "tokenBudget.softLimit",
+    "tokenBudget.hardLimit",
     "protectedFilePatterns",
     "commands",
     "commands.enabled",
@@ -202,6 +215,33 @@ function validateConfigTypes(config: Record<string, any>): ValidationError[] {
                 expected: "number",
                 actual: typeof config.turnProtection.turns,
             })
+        }
+    }
+
+    // Top-level tokenBudget validator
+    if (config.tokenBudget) {
+        if (
+            config.tokenBudget.enabled !== undefined &&
+            typeof config.tokenBudget.enabled !== "boolean"
+        ) {
+            errors.push({
+                key: "tokenBudget.enabled",
+                expected: "boolean",
+                actual: typeof config.tokenBudget.enabled,
+            })
+        }
+        const thresholdKeys = ["warnThreshold", "softLimit", "hardLimit"] as const
+        for (const key of thresholdKeys) {
+            if (
+                config.tokenBudget[key] !== undefined &&
+                typeof config.tokenBudget[key] !== "number"
+            ) {
+                errors.push({
+                    key: `tokenBudget.${key}`,
+                    expected: "number",
+                    actual: typeof config.tokenBudget[key],
+                })
+            }
         }
     }
 
@@ -432,11 +472,17 @@ const defaultConfig: PluginConfig = {
         enabled: false,
         turns: 4,
     },
+    tokenBudget: {
+        enabled: true,
+        warnThreshold: 30000,
+        softLimit: 80000,
+        hardLimit: 100000,
+    },
     protectedFilePatterns: [],
     tools: {
         settings: {
             nudgeEnabled: true,
-            nudgeFrequency: 10,
+            nudgeFrequency: 5,
             protectedTools: [...DEFAULT_PROTECTED_TOOLS],
         },
         discard: {
@@ -453,7 +499,7 @@ const defaultConfig: PluginConfig = {
             protectedTools: [],
         },
         supersedeWrites: {
-            enabled: false,
+            enabled: true,
         },
         purgeErrors: {
             enabled: true,
@@ -633,6 +679,20 @@ function mergeCommands(
     }
 }
 
+function mergeTokenBudget(
+    base: PluginConfig["tokenBudget"],
+    override?: Partial<PluginConfig["tokenBudget"]>,
+): PluginConfig["tokenBudget"] {
+    if (!override) return base
+
+    return {
+        enabled: override.enabled ?? base.enabled,
+        warnThreshold: override.warnThreshold ?? base.warnThreshold,
+        softLimit: override.softLimit ?? base.softLimit,
+        hardLimit: override.hardLimit ?? base.hardLimit,
+    }
+}
+
 function deepCloneConfig(config: PluginConfig): PluginConfig {
     return {
         ...config,
@@ -641,6 +701,7 @@ function deepCloneConfig(config: PluginConfig): PluginConfig {
             protectedTools: [...config.commands.protectedTools],
         },
         turnProtection: { ...config.turnProtection },
+        tokenBudget: { ...config.tokenBudget },
         protectedFilePatterns: [...config.protectedFilePatterns],
         tools: {
             settings: {
@@ -666,131 +727,78 @@ function deepCloneConfig(config: PluginConfig): PluginConfig {
     }
 }
 
+function mergeConfigOverride(
+    config: PluginConfig,
+    data: Record<string, any>,
+): PluginConfig {
+    return {
+        enabled: data.enabled ?? config.enabled,
+        debug: data.debug ?? config.debug,
+        pruneNotification: data.pruneNotification ?? config.pruneNotification,
+        commands: mergeCommands(config.commands, data.commands as any),
+        turnProtection: {
+            enabled: data.turnProtection?.enabled ?? config.turnProtection.enabled,
+            turns: data.turnProtection?.turns ?? config.turnProtection.turns,
+        },
+        tokenBudget: mergeTokenBudget(config.tokenBudget, data.tokenBudget),
+        protectedFilePatterns: [
+            ...new Set([
+                ...config.protectedFilePatterns,
+                ...(data.protectedFilePatterns ?? []),
+            ]),
+        ],
+        tools: mergeTools(config.tools, data.tools as any),
+        strategies: mergeStrategies(config.strategies, data.strategies as any),
+    }
+}
+
+function loadAndMergeConfig(
+    ctx: PluginInput,
+    config: PluginConfig,
+    configPath: string,
+    configLabel: string,
+    isProject: boolean,
+): PluginConfig {
+    const result = loadConfigFile(configPath)
+    if (result.parseError) {
+        setTimeout(() => {
+            try {
+                ctx.client.tui.showToast({
+                    body: {
+                        title: `DCP: Invalid ${configLabel}`,
+                        message: `${configPath}\n${result.parseError}\nUsing ${isProject ? "global/" : ""}default values`,
+                        variant: "warning",
+                        duration: 7000,
+                    },
+                })
+            } catch {}
+        }, 7000)
+    } else if (result.data) {
+        showConfigValidationWarnings(ctx, configPath, result.data, isProject)
+        return mergeConfigOverride(config, result.data)
+    }
+    return config
+}
+
 export function getConfig(ctx: PluginInput): PluginConfig {
     let config = deepCloneConfig(defaultConfig)
     const configPaths = getConfigPaths(ctx)
 
     // Load and merge global config
     if (configPaths.global) {
-        const result = loadConfigFile(configPaths.global)
-        if (result.parseError) {
-            setTimeout(async () => {
-                try {
-                    ctx.client.tui.showToast({
-                        body: {
-                            title: "DCP: Invalid config",
-                            message: `${configPaths.global}\n${result.parseError}\nUsing default values`,
-                            variant: "warning",
-                            duration: 7000,
-                        },
-                    })
-                } catch {}
-            }, 7000)
-        } else if (result.data) {
-            // Validate config keys and types
-            showConfigValidationWarnings(ctx, configPaths.global, result.data, false)
-            config = {
-                enabled: result.data.enabled ?? config.enabled,
-                debug: result.data.debug ?? config.debug,
-                pruneNotification: result.data.pruneNotification ?? config.pruneNotification,
-                commands: mergeCommands(config.commands, result.data.commands as any),
-                turnProtection: {
-                    enabled: result.data.turnProtection?.enabled ?? config.turnProtection.enabled,
-                    turns: result.data.turnProtection?.turns ?? config.turnProtection.turns,
-                },
-                protectedFilePatterns: [
-                    ...new Set([
-                        ...config.protectedFilePatterns,
-                        ...(result.data.protectedFilePatterns ?? []),
-                    ]),
-                ],
-                tools: mergeTools(config.tools, result.data.tools as any),
-                strategies: mergeStrategies(config.strategies, result.data.strategies as any),
-            }
-        }
+        config = loadAndMergeConfig(ctx, config, configPaths.global, "config", false)
     } else {
-        // No config exists, create default
         createDefaultConfig()
     }
 
     // Load and merge $OPENCODE_CONFIG_DIR/dcp.jsonc|json (overrides global)
     if (configPaths.configDir) {
-        const result = loadConfigFile(configPaths.configDir)
-        if (result.parseError) {
-            setTimeout(async () => {
-                try {
-                    ctx.client.tui.showToast({
-                        body: {
-                            title: "DCP: Invalid configDir config",
-                            message: `${configPaths.configDir}\n${result.parseError}\nUsing global/default values`,
-                            variant: "warning",
-                            duration: 7000,
-                        },
-                    })
-                } catch {}
-            }, 7000)
-        } else if (result.data) {
-            // Validate config keys and types
-            showConfigValidationWarnings(ctx, configPaths.configDir, result.data, true)
-            config = {
-                enabled: result.data.enabled ?? config.enabled,
-                debug: result.data.debug ?? config.debug,
-                pruneNotification: result.data.pruneNotification ?? config.pruneNotification,
-                commands: mergeCommands(config.commands, result.data.commands as any),
-                turnProtection: {
-                    enabled: result.data.turnProtection?.enabled ?? config.turnProtection.enabled,
-                    turns: result.data.turnProtection?.turns ?? config.turnProtection.turns,
-                },
-                protectedFilePatterns: [
-                    ...new Set([
-                        ...config.protectedFilePatterns,
-                        ...(result.data.protectedFilePatterns ?? []),
-                    ]),
-                ],
-                tools: mergeTools(config.tools, result.data.tools as any),
-                strategies: mergeStrategies(config.strategies, result.data.strategies as any),
-            }
-        }
+        config = loadAndMergeConfig(ctx, config, configPaths.configDir, "configDir config", true)
     }
 
     // Load and merge project config (overrides global)
     if (configPaths.project) {
-        const result = loadConfigFile(configPaths.project)
-        if (result.parseError) {
-            setTimeout(async () => {
-                try {
-                    ctx.client.tui.showToast({
-                        body: {
-                            title: "DCP: Invalid project config",
-                            message: `${configPaths.project}\n${result.parseError}\nUsing global/default values`,
-                            variant: "warning",
-                            duration: 7000,
-                        },
-                    })
-                } catch {}
-            }, 7000)
-        } else if (result.data) {
-            // Validate config keys and types
-            showConfigValidationWarnings(ctx, configPaths.project, result.data, true)
-            config = {
-                enabled: result.data.enabled ?? config.enabled,
-                debug: result.data.debug ?? config.debug,
-                pruneNotification: result.data.pruneNotification ?? config.pruneNotification,
-                commands: mergeCommands(config.commands, result.data.commands as any),
-                turnProtection: {
-                    enabled: result.data.turnProtection?.enabled ?? config.turnProtection.enabled,
-                    turns: result.data.turnProtection?.turns ?? config.turnProtection.turns,
-                },
-                protectedFilePatterns: [
-                    ...new Set([
-                        ...config.protectedFilePatterns,
-                        ...(result.data.protectedFilePatterns ?? []),
-                    ]),
-                ],
-                tools: mergeTools(config.tools, result.data.tools as any),
-                strategies: mergeStrategies(config.strategies, result.data.strategies as any),
-            }
-        }
+        config = loadAndMergeConfig(ctx, config, configPaths.project, "project config", true)
     }
 
     return config

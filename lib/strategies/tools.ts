@@ -70,6 +70,17 @@ async function executePruneOperation(
     // Resolve numeric IDs to callIDs using the snapshot
     const pruneToolIds: string[] = processedNumericIds.map((index) => prunableList[index])
 
+    // Filter out already-pruned tools (handles same-turn repeated calls)
+    const filteredPruneToolIds = pruneToolIds.filter((id) => !state.prune.toolIdSet.has(id))
+    if (filteredPruneToolIds.length === 0) {
+        throw new Error("All specified tools have already been pruned.")
+    }
+    if (filteredPruneToolIds.length < pruneToolIds.length) {
+        logger.info(
+            `Filtered ${pruneToolIds.length - filteredPruneToolIds.length} already-pruned tools`,
+        )
+    }
+
     // Fetch messages for token calculation and session initialization
     const messagesResponse = await client.session.messages({
         path: { id: sessionId },
@@ -79,7 +90,7 @@ async function executePruneOperation(
     await ensureSessionInitialized(ctx.client, state, sessionId, logger, messages)
 
     const currentParams = getCurrentParams(state, messages, logger)
-    const newPruneToolIds = addPruneToolIds(state, pruneToolIds)
+    const newPruneToolIds = addPruneToolIds(state, filteredPruneToolIds)
 
     const toolMetadata = new Map<string, ToolParameterEntry>()
     for (const id of newPruneToolIds) {
@@ -107,9 +118,6 @@ async function executePruneOperation(
     state.stats.totalPruneTokens += state.stats.pruneTokenCounter
     state.stats.pruneTokenCounter = 0
     state.nudgeCounter = 0
-
-    // Clear the snapshot after use - a fresh list will be generated on next turn
-    state.prunableToolIdList = null
 
     saveSessionState(state, logger).catch((err) =>
         logger.error("Failed to persist state", { error: err.message }),

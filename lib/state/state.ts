@@ -63,16 +63,17 @@ export function createSessionState(): SessionState {
         stats: {
             pruneTokenCounter: 0,
             totalPruneTokens: 0,
+            currentPrunableTokens: 0,
         },
         toolParameters: new Map<string, ToolParameterEntry>(),
         nudgeCounter: 0,
-        lastToolPrune: false,
         lastCompaction: 0,
         currentTurn: 0,
         variant: undefined,
         toolIdListCache: null,
         toolIdListCacheHash: undefined,
         toolIdToIndexCache: null,
+        toolTokensCache: new Map(),
         prunableToolIdList: null,
     }
 }
@@ -85,13 +86,13 @@ export function resetSessionState(state: SessionState): void {
     state.stats = fresh.stats
     state.toolParameters.clear()
     state.nudgeCounter = fresh.nudgeCounter
-    state.lastToolPrune = fresh.lastToolPrune
     state.lastCompaction = fresh.lastCompaction
     state.currentTurn = fresh.currentTurn
     state.variant = fresh.variant
     state.toolIdListCache = fresh.toolIdListCache
     state.toolIdListCacheHash = fresh.toolIdListCacheHash
     state.toolIdToIndexCache = fresh.toolIdToIndexCache
+    state.toolTokensCache.clear()
     state.prunableToolIdList = fresh.prunableToolIdList
 }
 
@@ -132,6 +133,7 @@ export async function ensureSessionInitialized(
     state.stats = {
         pruneTokenCounter: persisted.stats?.pruneTokenCounter || 0,
         totalPruneTokens: persisted.stats?.totalPruneTokens || 0,
+        currentPrunableTokens: 0, // Recalculated on each turn
     }
 }
 

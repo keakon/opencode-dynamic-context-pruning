@@ -7,20 +7,12 @@ import { SYSTEM_PROMPT_BOTH } from "./system/both"
 import { SYSTEM_PROMPT_DISCARD } from "./system/discard"
 import { SYSTEM_PROMPT_EXTRACT } from "./system/extract"
 
-// Nudge prompts
-import { NUDGE_BOTH } from "./nudge/both"
-import { NUDGE_DISCARD } from "./nudge/discard"
-import { NUDGE_EXTRACT } from "./nudge/extract"
-
 const PROMPTS: Record<string, string> = {
     "discard-tool-spec": DISCARD_TOOL_SPEC,
     "extract-tool-spec": EXTRACT_TOOL_SPEC,
     "system/system-prompt-both": SYSTEM_PROMPT_BOTH,
     "system/system-prompt-discard": SYSTEM_PROMPT_DISCARD,
     "system/system-prompt-extract": SYSTEM_PROMPT_EXTRACT,
-    "nudge/nudge-both": NUDGE_BOTH,
-    "nudge/nudge-discard": NUDGE_DISCARD,
-    "nudge/nudge-extract": NUDGE_EXTRACT,
 }
 
 // Simple cache for prompts with variable substitution (no LRU needed - prompts are static and few)

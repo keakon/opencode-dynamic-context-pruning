@@ -18,6 +18,7 @@ export interface ToolParameterEntry {
 export interface SessionStats {
     pruneTokenCounter: number
     totalPruneTokens: number
+    currentPrunableTokens: number
 }
 
 export interface Prune {
@@ -32,12 +33,12 @@ export interface SessionState {
     stats: SessionStats
     toolParameters: Map<string, ToolParameterEntry>
     nudgeCounter: number
-    lastToolPrune: boolean
     lastCompaction: number
     currentTurn: number
     variant: string | undefined
     toolIdListCache: string[] | null
     toolIdListCacheHash: string | undefined
     toolIdToIndexCache: Map<string, number> | null
+    toolTokensCache: Map<string, number>
     prunableToolIdList: string[] | null
 }
