@@ -10,26 +10,16 @@ import {
 import { ToolParameterEntry } from "../state"
 import { PluginConfig } from "../config"
 
-export type PruneReason = "completion" | "noise" | "extraction"
-export const PRUNE_REASON_LABELS: Record<PruneReason, string> = {
-    completion: "Task Complete",
-    noise: "Noise Removal",
-    extraction: "Extraction",
-}
-
 function buildMinimalMessage(
     state: SessionState,
-    reason: PruneReason | undefined,
     distillation: string[] | undefined,
     showDistillation: boolean,
 ): string {
     const extractedTokens = countDistillationTokens(distillation)
     const extractedSuffix =
         extractedTokens > 0 ? ` (extracted ${formatTokenCount(extractedTokens)})` : ""
-    const reasonSuffix = reason && extractedTokens === 0 ? ` — ${PRUNE_REASON_LABELS[reason]}` : ""
-    let message =
+    const message =
         formatStatsHeader(state.stats.totalPruneTokens, state.stats.pruneTokenCounter) +
-        reasonSuffix +
         extractedSuffix
 
     return message + formatExtracted(showDistillation ? distillation : undefined)
@@ -37,7 +27,6 @@ function buildMinimalMessage(
 
 function buildDetailedMessage(
     state: SessionState,
-    reason: PruneReason | undefined,
     pruneToolIds: string[],
     toolMetadata: Map<string, ToolParameterEntry>,
     workingDirectory: string,
@@ -51,9 +40,7 @@ function buildDetailedMessage(
         const extractedTokens = countDistillationTokens(distillation)
         const extractedSuffix =
             extractedTokens > 0 ? `, extracted ${formatTokenCount(extractedTokens)}` : ""
-        const reasonLabel =
-            reason && extractedTokens === 0 ? ` — ${PRUNE_REASON_LABELS[reason]}` : ""
-        message += `\n\n▣ Pruning (${pruneTokenCounterStr}${extractedSuffix})${reasonLabel}`
+        message += `\n\n▣ Pruning (${pruneTokenCounterStr}${extractedSuffix})`
 
         const itemLines = formatPrunedItemsList(pruneToolIds, toolMetadata, workingDirectory)
         message += "\n" + itemLines.join("\n")
@@ -70,13 +57,11 @@ export async function sendUnifiedNotification(
     sessionId: string,
     pruneToolIds: string[],
     toolMetadata: Map<string, ToolParameterEntry>,
-    reason: PruneReason | undefined,
     params: any,
     workingDirectory: string,
     distillation?: string[],
 ): Promise<boolean> {
-    const hasPruned = pruneToolIds.length > 0
-    if (!hasPruned) {
+    if (pruneToolIds.length === 0) {
         return false
     }
 
@@ -88,10 +73,9 @@ export async function sendUnifiedNotification(
 
     const message =
         config.pruneNotification === "minimal"
-            ? buildMinimalMessage(state, reason, distillation, showDistillation)
+            ? buildMinimalMessage(state, distillation, showDistillation)
             : buildDetailedMessage(
                   state,
-                  reason,
                   pruneToolIds,
                   toolMetadata,
                   workingDirectory,

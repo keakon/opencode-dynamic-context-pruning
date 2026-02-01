@@ -22,6 +22,7 @@ export interface SessionStats {
 
 export interface Prune {
     toolIds: string[]
+    toolIdSet: Set<string>
 }
 
 export interface SessionState {
@@ -35,4 +36,8 @@ export interface SessionState {
     lastCompaction: number
     currentTurn: number
     variant: string | undefined
+    toolIdListCache: string[] | null
+    toolIdListCacheHash: string | undefined
+    toolIdToIndexCache: Map<string, number> | null
+    prunableToolIdList: string[] | null
 }

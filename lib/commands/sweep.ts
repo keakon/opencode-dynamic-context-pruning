@@ -15,8 +15,8 @@ import { formatPrunedItemsList } from "../ui/utils"
 import { getCurrentParams, calculateTokensSaved } from "../strategies/utils"
 import { buildToolIdList, isIgnoredUserMessage } from "../messages/utils"
 import { saveSessionState } from "../state/persistence"
-import { isMessageCompacted } from "../shared-utils"
-import { getFilePathFromParameters, isProtectedFilePath } from "../protected-file-patterns"
+import { isMessageCompacted, addPruneToolIds } from "../shared-utils"
+import { isToolCallProtected } from "../protected-file-patterns"
 
 export interface SweepCommandContext {
     client: any
@@ -136,7 +136,7 @@ export async function handleSweepCommand(ctx: SweepCommandContext): Promise<void
     if (isLastNMode) {
         // Mode: Sweep last N tools
         mode = "last-n"
-        const allToolIds = buildToolIdList(state, messages, logger)
+        const allToolIds = buildToolIdList(state, messages)
         const startIndex = Math.max(0, allToolIds.length - numArg!)
         toolIdsToSweep = allToolIds.slice(startIndex)
         logger.info(`Sweep command: last ${numArg} mode, found ${toolIdsToSweep.length} tools`)
@@ -160,42 +160,25 @@ export async function handleSweepCommand(ctx: SweepCommandContext): Promise<void
     }
 
     // Filter out already-pruned tools, protected tools, and protected file paths
-    const existingPrunedSet = new Set(state.prune.toolIds)
-    const newToolIds = toolIdsToSweep.filter((id) => {
-        if (existingPrunedSet.has(id)) {
-            return false
-        }
-        const entry = state.toolParameters.get(id)
-        if (!entry) {
-            return true
-        }
-        if (protectedTools.includes(entry.tool)) {
-            logger.debug(`Sweep: skipping protected tool ${entry.tool} (${id})`)
-            return false
-        }
-        const filePath = getFilePathFromParameters(entry.parameters)
-        if (isProtectedFilePath(filePath, config.protectedFilePatterns)) {
-            logger.debug(`Sweep: skipping protected file path ${filePath} (${id})`)
-            return false
-        }
-        return true
-    })
+    const newToolIds: string[] = []
+    let skippedProtected = 0
 
-    // Count how many were skipped due to protection
-    const skippedProtected = toolIdsToSweep.filter((id) => {
+    for (const id of toolIdsToSweep) {
+        if (state.prune.toolIdSet.has(id)) {
+            continue
+        }
         const entry = state.toolParameters.get(id)
         if (!entry) {
-            return false
+            newToolIds.push(id)
+            continue
         }
-        if (protectedTools.includes(entry.tool)) {
-            return true
+        if (isToolCallProtected(entry.tool, entry.parameters, protectedTools, config.protectedFilePatterns)) {
+            logger.debug(`Sweep: skipping protected tool ${entry.tool} (${id})`)
+            skippedProtected++
+            continue
         }
-        const filePath = getFilePathFromParameters(entry.parameters)
-        if (isProtectedFilePath(filePath, config.protectedFilePatterns)) {
-            return true
-        }
-        return false
-    }).length
+        newToolIds.push(id)
+    }
 
     if (newToolIds.length === 0) {
         const message = formatSweepMessage(
@@ -213,7 +196,7 @@ export async function handleSweepCommand(ctx: SweepCommandContext): Promise<void
     }
 
     // Add to prune list
-    state.prune.toolIds.push(...newToolIds)
+    addPruneToolIds(state, newToolIds)
 
     // Calculate tokens saved
     const tokensSaved = calculateTokensSaved(state, messages, newToolIds)

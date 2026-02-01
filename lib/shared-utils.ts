@@ -14,3 +14,15 @@ export const getLastUserMessage = (messages: WithParts[]): WithParts | null => {
     }
     return null
 }
+
+export const addPruneToolIds = (state: SessionState, ids: string[]): string[] => {
+    const added: string[] = []
+    for (const id of ids) {
+        if (!state.prune.toolIdSet.has(id)) {
+            state.prune.toolIds.push(id)
+            state.prune.toolIdSet.add(id)
+            added.push(id)
+        }
+    }
+    return added
+}

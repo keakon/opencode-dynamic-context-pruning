@@ -6,6 +6,9 @@ function escapeRegExpChar(ch: string): string {
     return /[\\.^$+{}()|\[\]]/.test(ch) ? `\\${ch}` : ch
 }
 
+const GLOB_REGEX_CACHE = new Map<string, RegExp>()
+const GLOB_REGEX_CACHE_LIMIT = 100
+
 /**
  * Basic glob matching with support for `**`, `*`, and `?`.
  *
@@ -19,6 +22,10 @@ export function matchesGlob(inputPath: string, pattern: string): boolean {
 
     const input = normalizePath(inputPath)
     const pat = normalizePath(pattern)
+    const cached = GLOB_REGEX_CACHE.get(pat)
+    if (cached) {
+        return cached.test(input)
+    }
 
     let regex = "^"
 
@@ -62,7 +69,15 @@ export function matchesGlob(inputPath: string, pattern: string): boolean {
 
     regex += "$"
 
-    return new RegExp(regex).test(input)
+    const compiled = new RegExp(regex)
+    GLOB_REGEX_CACHE.set(pat, compiled)
+    if (GLOB_REGEX_CACHE.size > GLOB_REGEX_CACHE_LIMIT) {
+        const oldestKey = GLOB_REGEX_CACHE.keys().next().value as string | undefined
+        if (oldestKey) {
+            GLOB_REGEX_CACHE.delete(oldestKey)
+        }
+    }
+    return compiled.test(input)
 }
 
 export function getFilePathFromParameters(parameters: unknown): string | undefined {
@@ -79,4 +94,21 @@ export function isProtectedFilePath(filePath: string | undefined, patterns: stri
     if (!patterns || patterns.length === 0) return false
 
     return patterns.some((pattern) => matchesGlob(filePath, pattern))
+}
+
+/**
+ * Check if a tool call should be protected from pruning.
+ * Unified logic used by inject, sweep, deduplication, purge-errors, supersede-writes.
+ */
+export function isToolCallProtected(
+    tool: string,
+    parameters: unknown,
+    protectedTools: string[],
+    protectedFilePatterns: string[],
+): boolean {
+    if (protectedTools.includes(tool)) {
+        return true
+    }
+    const filePath = getFilePathFromParameters(parameters)
+    return isProtectedFilePath(filePath, protectedFilePatterns)
 }

@@ -1,4 +1,3 @@
-import { Logger } from "../logger"
 import { isMessageCompacted } from "../shared-utils"
 import type { SessionState, WithParts } from "../state"
 import type { UserMessage } from "@opencode-ai/sdk/v2"
@@ -228,11 +227,13 @@ export const extractParameterKey = (tool: string, parameters: any): string => {
     return paramStr.substring(0, 50)
 }
 
-export function buildToolIdList(
-    state: SessionState,
-    messages: WithParts[],
-    logger: Logger,
-): string[] {
+export function buildToolIdList(state: SessionState, messages: WithParts[]): string[] {
+    const lastMsgId = messages.length > 0 ? messages[messages.length - 1].info.id : undefined
+    const msgHash = messages.length + "_" + lastMsgId + "_" + state.lastCompaction
+
+    if (state.toolIdListCacheHash === msgHash && state.toolIdListCache) {
+        return state.toolIdListCache
+    }
     const toolIds: string[] = []
     for (const msg of messages) {
         if (isMessageCompacted(state, msg)) {
@@ -246,6 +247,12 @@ export function buildToolIdList(
                 }
             }
         }
+    }
+    state.toolIdListCache = toolIds
+    state.toolIdListCacheHash = msgHash
+    state.toolIdToIndexCache = new Map()
+    for (let i = 0; i < toolIds.length; i++) {
+        state.toolIdToIndexCache.set(toolIds[i], i)
     }
     return toolIds
 }

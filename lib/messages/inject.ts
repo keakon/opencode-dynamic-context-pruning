@@ -12,8 +12,9 @@ import {
     isDeepSeekOrKimi,
     isIgnoredUserMessage,
 } from "./utils"
-import { getFilePathFromParameters, isProtectedFilePath } from "../protected-file-patterns"
+import { isToolCallProtected } from "../protected-file-patterns"
 import { getLastUserMessage } from "../shared-utils"
+import { truncate } from "../ui/utils"
 
 const getNudgeString = (config: PluginConfig): string => {
     const discardEnabled = config.tools.discard.enabled
@@ -30,7 +31,7 @@ const getNudgeString = (config: PluginConfig): string => {
 }
 
 const wrapPrunableTools = (content: string): string => `<prunable-tools>
-The following tools have been invoked and are available for pruning. This list does not mandate immediate action. Consider your current goals and the resources you need before discarding valuable tool inputs or outputs. Consolidate your prunes for efficiency; it is rarely worth pruning a single tiny tool output. Keep the context free of noise.
+The following tools are available for pruning. Only IDs listed here are valid.
 ${content}
 </prunable-tools>`
 
@@ -58,45 +59,73 @@ const buildPrunableToolsList = (
     logger: Logger,
     messages: WithParts[],
 ): string => {
-    const lines: string[] = []
-    const toolIdList: string[] = buildToolIdList(state, messages, logger)
+    const allToolIds = buildToolIdList(state, messages)
+    if (allToolIds.length === 0) {
+        return ""
+    }
+    const toolIdToIndex = state.toolIdToIndexCache!
 
-    state.toolParameters.forEach((toolParameterEntry, toolCallId) => {
-        if (state.prune.toolIds.includes(toolCallId)) {
-            return
+    const allProtectedTools = config.tools.settings.protectedTools
+
+    const prunableEntries: {
+        id: string
+        numericId: number
+        tool: string
+        paramKey: string
+    }[] = []
+
+    for (const [toolCallId, toolParameterEntry] of state.toolParameters) {
+        if (state.prune.toolIdSet.has(toolCallId)) {
+            continue
         }
 
-        const allProtectedTools = config.tools.settings.protectedTools
-        if (allProtectedTools.includes(toolParameterEntry.tool)) {
-            return
+        if (isToolCallProtected(
+            toolParameterEntry.tool,
+            toolParameterEntry.parameters,
+            allProtectedTools,
+            config.protectedFilePatterns,
+        )) {
+            continue
         }
 
-        const filePath = getFilePathFromParameters(toolParameterEntry.parameters)
-        if (isProtectedFilePath(filePath, config.protectedFilePatterns)) {
-            return
-        }
-
-        const numericId = toolIdList.indexOf(toolCallId)
-        if (numericId === -1) {
+        const numericId = toolIdToIndex.get(toolCallId)
+        if (numericId === undefined) {
             logger.warn(`Tool in cache but not in toolIdList - possible stale entry`, {
                 toolCallId,
                 tool: toolParameterEntry.tool,
             })
-            return
+            continue
         }
-        const paramKey = extractParameterKey(toolParameterEntry.tool, toolParameterEntry.parameters)
-        const description = paramKey
-            ? `${toolParameterEntry.tool}, ${paramKey}`
-            : toolParameterEntry.tool
-        lines.push(`${numericId}: ${description}`)
-        logger.debug(
-            `Prunable tool found - ID: ${numericId}, Tool: ${toolParameterEntry.tool}, Call ID: ${toolCallId}`,
-        )
-    })
 
-    if (lines.length === 0) {
+        const paramKey = extractParameterKey(toolParameterEntry.tool, toolParameterEntry.parameters)
+        prunableEntries.push({
+            id: toolCallId,
+            numericId,
+            tool: toolParameterEntry.tool,
+            paramKey,
+        })
+    }
+
+    if (prunableEntries.length === 0) {
+        state.prunableToolIdList = null // Clear stale snapshot
         return ""
     }
+
+    // Sort by numeric ID for stable, predictable output order
+    prunableEntries.sort((a, b) => a.numericId - b.numericId)
+
+    // Save snapshot of the numeric ID → callID mapping for use by discard/extract tools.
+    // This prevents ID shifting when new tool calls arrive between list generation and execution.
+    state.prunableToolIdList = prunableEntries.map((e) => e.id)
+
+    const lines: string[] = prunableEntries.map((entry, i) => {
+        const description = entry.paramKey
+            ? `${entry.tool}, ${truncate(entry.paramKey, 50)}`
+            : entry.tool
+        return `${i}: ${description}`
+    })
+
+    logger.debug(`Found ${prunableEntries.length} prunable tools`)
 
     return wrapPrunableTools(lines.join("\n"))
 }

@@ -71,7 +71,7 @@ export function createChatMessageTransformHandler(
         supersedeWrites(state, logger, config, output.messages)
         purgeErrors(state, logger, config, output.messages)
 
-        prune(state, logger, config, output.messages)
+        prune(state, output.messages)
 
         insertPruneToolContext(state, config, logger, output.messages)
 

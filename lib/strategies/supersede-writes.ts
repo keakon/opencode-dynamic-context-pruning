@@ -4,6 +4,7 @@ import type { SessionState, WithParts } from "../state"
 import { buildToolIdList } from "../messages/utils"
 import { getFilePathFromParameters, isProtectedFilePath } from "../protected-file-patterns"
 import { calculateTokensSaved } from "./utils"
+import { addPruneToolIds } from "../shared-utils"
 
 /**
  * Supersede Writes strategy - prunes write tool inputs for files that have
@@ -24,15 +25,13 @@ export const supersedeWrites = (
     }
 
     // Build list of all tool call IDs from messages (chronological order)
-    const allToolIds = buildToolIdList(state, messages, logger)
+    const allToolIds = buildToolIdList(state, messages)
     if (allToolIds.length === 0) {
         return
     }
 
     // Filter out IDs already pruned
-    const alreadyPruned = new Set(state.prune.toolIds)
-
-    const unprunedIds = allToolIds.filter((id) => !alreadyPruned.has(id))
+    const unprunedIds = allToolIds.filter((id) => !state.prune.toolIdSet.has(id))
     if (unprunedIds.length === 0) {
         return
     }
@@ -60,7 +59,7 @@ export const supersedeWrites = (
             continue
         }
 
-        if (metadata.tool === "write") {
+        if (metadata.tool === "write" || metadata.tool === "edit") {
             if (!writesByFile.has(filePath)) {
                 writesByFile.set(filePath, [])
             }
@@ -85,7 +84,7 @@ export const supersedeWrites = (
         // For each write, check if there's a read that comes after it
         for (const write of writes) {
             // Skip if already pruned
-            if (alreadyPruned.has(write.id)) {
+            if (state.prune.toolIdSet.has(write.id)) {
                 continue
             }
 
@@ -99,7 +98,7 @@ export const supersedeWrites = (
 
     if (newPruneIds.length > 0) {
         state.stats.totalPruneTokens += calculateTokensSaved(state, messages, newPruneIds)
-        state.prune.toolIds.push(...newPruneIds)
+        addPruneToolIds(state, newPruneIds)
         logger.debug(`Marked ${newPruneIds.length} superseded write tool calls for pruning`)
     }
 }

@@ -1,9 +1,9 @@
 import { PluginConfig } from "../config"
 import { Logger } from "../logger"
 import type { SessionState, WithParts } from "../state"
-import { buildToolIdList } from "../messages/utils"
-import { getFilePathFromParameters, isProtectedFilePath } from "../protected-file-patterns"
-import { calculateTokensSaved } from "./utils"
+import { isToolCallProtected } from "../protected-file-patterns"
+import { calculateTokensSaved, getUnprunedToolIds } from "./utils"
+import { addPruneToolIds } from "../shared-utils"
 
 /**
  * Deduplication strategy - prunes older tool calls that have identical
@@ -20,17 +20,8 @@ export const deduplicate = (
         return
     }
 
-    // Build list of all tool call IDs from messages (chronological order)
-    const allToolIds = buildToolIdList(state, messages, logger)
-    if (allToolIds.length === 0) {
-        return
-    }
-
-    // Filter out IDs already pruned
-    const alreadyPruned = new Set(state.prune.toolIds)
-    const unprunedIds = allToolIds.filter((id) => !alreadyPruned.has(id))
-
-    if (unprunedIds.length === 0) {
+    const unprunedIds = getUnprunedToolIds(state, messages)
+    if (!unprunedIds) {
         return
     }
 
@@ -47,12 +38,12 @@ export const deduplicate = (
         }
 
         // Skip protected tools
-        if (protectedTools.includes(metadata.tool)) {
-            continue
-        }
-
-        const filePath = getFilePathFromParameters(metadata.parameters)
-        if (isProtectedFilePath(filePath, config.protectedFilePatterns)) {
+        if (isToolCallProtected(
+            metadata.tool,
+            metadata.parameters,
+            protectedTools,
+            config.protectedFilePatterns,
+        )) {
             continue
         }
 
@@ -74,10 +65,9 @@ export const deduplicate = (
         }
     }
 
-    state.stats.totalPruneTokens += calculateTokensSaved(state, messages, newPruneIds)
-
     if (newPruneIds.length > 0) {
-        state.prune.toolIds.push(...newPruneIds)
+        state.stats.totalPruneTokens += calculateTokensSaved(state, messages, newPruneIds)
+        addPruneToolIds(state, newPruneIds)
         logger.debug(`Marked ${newPruneIds.length} duplicate tool calls for pruning`)
     }
 }

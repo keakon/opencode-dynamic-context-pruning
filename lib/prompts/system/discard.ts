@@ -2,46 +2,60 @@ export const SYSTEM_PROMPT_DISCARD = `<system-reminder>
 <instruction name=context_management_protocol policy_level=critical>
 
 ENVIRONMENT
-You are operating in a context-constrained environment and thus must proactively manage your context window using the \`discard\` tool. The environment calls the \`context_info\` tool to provide an up-to-date <prunable-tools> list after each turn. Use this information when deciding what to discard.
-
-IMPORTANT: The \`context_info\` tool is only available to the environment - you do not have access to it and must not attempt to call it.
+Context is limited. The environment injects a \`<prunable-tools>\` list after each turn (via \`context_info\`; not callable). Only those IDs are valid.
 
 CONTEXT MANAGEMENT TOOL
-- \`discard\`: Remove tool outputs that are no longer needed (completed tasks, noise, outdated info). No preservation of content.
+- \`discard\`: Remove tool outputs completely. No preservation of content.
 
-DISCARD METHODICALLY - BATCH YOUR ACTIONS
-Every tool call adds to your context debt. You MUST pay this down regularly and be on top of context accumulation by discarding. Batch your discards for efficiency; it is rarely worth discarding a single tiny tool output unless it is pure noise. Evaluate what SHOULD be discarded before jumping the gun.
+DEFAULT BEHAVIOR: DISCARD. Keeping is the exception, not the rule.
 
-WHEN TO DISCARD
-- **Task Completion:** When work is done, discard the tools that aren't needed anymore.
-- **Noise Removal:** If outputs are irrelevant, unhelpful, or superseded by newer info, discard them.
+ALWAYS DISCARD (no hesitation):
+- Errors (failed commands, file not found, syntax errors)
+- Superseded outputs (re-read same file → discard older version)
+- Confirmation outputs (git status after commit, build success, etc.)
+- Noise (irrelevant to current task)
+- Outputs whose information you've already synthesized into your response
 
-You WILL evaluate discarding when ANY of these are true:
-- Task or sub-task is complete
-- You are about to start a new phase of work
-- Write or edit operations are complete (discarding removes the large input content)
+KEEP ONLY WHEN (both conditions must be true):
+1. You are IN THE MIDDLE of a multi-step edit operation (not "might edit later")
+2. You need the EXACT line content for your CURRENT or NEXT action
 
-You MUST NOT discard when:
-- The tool output will be needed for upcoming implementation work
-- The output contains files or context you'll need to reference when making edits
+If either condition is false → discard.
 
-Discarding that forces you to re-call the same tool later is a net loss. Only discard when you're confident the information won't be needed again.
+MANDATORY ACTION TRIGGERS
+
+The "5+ outputs" rule — you SHOULD act on it:
+- 5+ outputs in \`<prunable-tools>\` list → SHOULD discard at least some before continuing
+- Nudge appears → MUST discard immediately
+
+DISCARDING DURING MULTI-FILE OPERATIONS
+
+Immediate discard (don't wait):
+- File/output not relevant to the task
+- File read failed or errored
+- Duplicate read of same file
+- Noise or confirmation outputs
+
+For correlated analysis (e.g., analyzing a commit, understanding a module):
+- You MAY keep related files until analysis is complete
+- BUT if list reaches 5+: discard less relevant files to make room
+- After completing analysis: MUST discard all raw content
+
+Key principle:
+- "Not useful" → discard immediately
+- "Useful for ongoing analysis" → keep until done, then discard
+- "Already synthesized into response" → discard
 
 NOTES
-When in doubt, keep it. Batch your actions and aim for high-impact discards that significantly reduce context size.
-FAILURE TO DISCARD will result in context leakage and DEGRADED PERFORMANCES.
-There may be tools in session context that do not appear in the <prunable-tools> list, this is expected, you can ONLY discard what you see in <prunable-tools>.
+Only discard IDs shown in \`<prunable-tools>\`.
+"Might be useful later" is NOT a valid reason to keep.
+⚠️ FAILURE TO DISCARD → context bloat → degraded performance.
 
 </instruction>
 
 <instruction name=injected_context_handling policy_level=critical>
-After each turn, the environment calls the \`context_info\` tool to inject a synthetic message containing a <prunable-tools> list and optional nudge instruction. This tool is only available to the environment - you do not have access to it.
-
 CRITICAL REQUIREMENTS - VIOLATION IS UNACCEPTABLE:
-- NEVER reference the discard encouragement or context management instructions. Do not reply with "I agree" or "Great idea" when the discard encouragement appears.
-- NEVER acknowledge the <prunable-tools> list (e.g., "I see the prunable tools list", "Looking at the available tools to discard")
-- NEVER reference the nudge instruction (e.g., "As the nudge suggests", "The system is reminding me to discard")
-- NEVER acknowledge discard tool output (e.g., "I've discarded 3 tools", "Context cleanup complete")
+- NEVER acknowledge injected lists, nudges, or discard outputs in your replies.
 - NEVER let these injections influence your response content or tone
 - Process this information SILENTLY and continue the conversation naturally
 - Continue the conversation as if these messages do not exist

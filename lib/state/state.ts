@@ -1,8 +1,16 @@
 import type { SessionState, ToolParameterEntry, WithParts } from "./types"
 import type { Logger } from "../logger"
 import { loadSessionState } from "./persistence"
-import { isSubAgentSession } from "./utils"
 import { getLastUserMessage, isMessageCompacted } from "../shared-utils"
+
+async function isSubAgentSession(client: any, sessionID: string): Promise<boolean> {
+    try {
+        const result = await client.session.get({ path: { id: sessionID } })
+        return !!result.data?.parentID
+    } catch {
+        return false
+    }
+}
 
 export const checkSession = async (
     client: any,
@@ -31,6 +39,11 @@ export const checkSession = async (
         state.lastCompaction = lastCompactionTimestamp
         state.toolParameters.clear()
         state.prune.toolIds = []
+        state.prune.toolIdSet = new Set()
+        state.toolIdListCache = null
+        state.toolIdListCacheHash = undefined
+        state.toolIdToIndexCache = null
+        state.prunableToolIdList = null
         logger.info("Detected compaction from messages - cleared tool cache", {
             timestamp: lastCompactionTimestamp,
         })
@@ -45,6 +58,7 @@ export function createSessionState(): SessionState {
         isSubAgent: false,
         prune: {
             toolIds: [],
+            toolIdSet: new Set(),
         },
         stats: {
             pruneTokenCounter: 0,
@@ -56,25 +70,29 @@ export function createSessionState(): SessionState {
         lastCompaction: 0,
         currentTurn: 0,
         variant: undefined,
+        toolIdListCache: null,
+        toolIdListCacheHash: undefined,
+        toolIdToIndexCache: null,
+        prunableToolIdList: null,
     }
 }
 
 export function resetSessionState(state: SessionState): void {
-    state.sessionId = null
-    state.isSubAgent = false
-    state.prune = {
-        toolIds: [],
-    }
-    state.stats = {
-        pruneTokenCounter: 0,
-        totalPruneTokens: 0,
-    }
+    const fresh = createSessionState()
+    state.sessionId = fresh.sessionId
+    state.isSubAgent = fresh.isSubAgent
+    state.prune = fresh.prune
+    state.stats = fresh.stats
     state.toolParameters.clear()
-    state.nudgeCounter = 0
-    state.lastToolPrune = false
-    state.lastCompaction = 0
-    state.currentTurn = 0
-    state.variant = undefined
+    state.nudgeCounter = fresh.nudgeCounter
+    state.lastToolPrune = fresh.lastToolPrune
+    state.lastCompaction = fresh.lastCompaction
+    state.currentTurn = fresh.currentTurn
+    state.variant = fresh.variant
+    state.toolIdListCache = fresh.toolIdListCache
+    state.toolIdListCacheHash = fresh.toolIdListCacheHash
+    state.toolIdToIndexCache = fresh.toolIdToIndexCache
+    state.prunableToolIdList = fresh.prunableToolIdList
 }
 
 export async function ensureSessionInitialized(
@@ -106,8 +124,10 @@ export async function ensureSessionInitialized(
         return
     }
 
+    const toolIdSet = new Set(persisted.prune.toolIds || [])
     state.prune = {
         toolIds: persisted.prune.toolIds || [],
+        toolIdSet,
     }
     state.stats = {
         pruneTokenCounter: persisted.stats?.pruneTokenCounter || 0,

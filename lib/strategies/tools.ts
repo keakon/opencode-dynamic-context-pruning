@@ -1,15 +1,14 @@
 import { tool } from "@opencode-ai/plugin"
 import type { SessionState, ToolParameterEntry, WithParts } from "../state"
 import type { PluginConfig } from "../config"
-import { buildToolIdList } from "../messages/utils"
-import { PruneReason, sendUnifiedNotification } from "../ui/notification"
+import { sendUnifiedNotification } from "../ui/notification"
 import { formatPruningResultForTool } from "../ui/utils"
 import { ensureSessionInitialized } from "../state"
 import { saveSessionState } from "../state/persistence"
 import type { Logger } from "../logger"
 import { loadPrompt } from "../prompts"
 import { calculateTokensSaved, getCurrentParams } from "./utils"
-import { getFilePathFromParameters, isProtectedFilePath } from "../protected-file-patterns"
+import { addPruneToolIds } from "../shared-utils"
 
 const DISCARD_TOOL_DESCRIPTION = loadPrompt("discard-tool-spec")
 const EXTRACT_TOOL_DESCRIPTION = loadPrompt("extract-tool-spec")
@@ -27,33 +26,51 @@ async function executePruneOperation(
     ctx: PruneToolContext,
     toolCtx: { sessionID: string },
     ids: string[],
-    reason: PruneReason,
     toolName: string,
     distillation?: string[],
 ): Promise<string> {
     const { client, state, logger, config, workingDirectory } = ctx
     const sessionId = toolCtx.sessionID
 
-    logger.info(`${toolName} tool invoked`)
-    logger.info(JSON.stringify(reason ? { ids, reason } : { ids }))
+    logger.info(`${toolName} tool invoked with ${ids.length} IDs`)
 
-    if (!ids || ids.length === 0) {
-        logger.debug(`${toolName} tool called but ids is empty or undefined`)
+    // Use the snapshot of prunable tool IDs that was saved when <prunable-tools> was generated.
+    // This prevents ID shifting issues when new messages arrive between list generation and execution.
+    const prunableList = state.prunableToolIdList
+    if (!prunableList || prunableList.length === 0) {
+        throw new Error("No prunable tools available. Wait for a fresh <prunable-tools> list.")
+    }
+
+    const numericToolIds: number[] = []
+    for (const id of ids) {
+        if (!/^\d+$/.test(id)) {
+            throw new Error(`Invalid non-numeric ID: ${id}. Use numeric IDs from <prunable-tools>.`)
+        }
+        numericToolIds.push(Number(id))
+    }
+
+    const processedNumericIds = distillation ? numericToolIds : [...new Set(numericToolIds)]
+
+    // For extract operations, each ID has a positional distillation entry.
+    // Duplicate IDs would cause the second distillation to be silently lost after dedup,
+    // so reject them early.
+    if (distillation && new Set(numericToolIds).size !== numericToolIds.length) {
         throw new Error(
-            `No IDs provided. Check the <prunable-tools> list for available IDs to ${toolName.toLowerCase()}.`,
+            `Duplicate IDs detected in extract operation. Each ID must be unique when using distillation.`,
         )
     }
 
-    const numericToolIds: number[] = ids
-        .map((id) => parseInt(id, 10))
-        .filter((n): n is number => !isNaN(n))
-
-    if (numericToolIds.length === 0) {
-        logger.debug(`No numeric tool IDs provided for ${toolName}: ` + JSON.stringify(ids))
-        throw new Error("No numeric IDs provided. Format: ids: [id1, id2, ...]")
+    // Validate all IDs are within bounds of the snapshot
+    if (processedNumericIds.some((id) => id < 0 || id >= prunableList.length)) {
+        throw new Error(
+            `IDs out of range (valid: 0-${prunableList.length - 1}). Only use IDs from <prunable-tools>.`,
+        )
     }
 
-    // Fetch messages to calculate tokens and find current agent
+    // Resolve numeric IDs to callIDs using the snapshot
+    const pruneToolIds: string[] = processedNumericIds.map((index) => prunableList[index])
+
+    // Fetch messages for token calculation and session initialization
     const messagesResponse = await client.session.messages({
         path: { id: sessionId },
     })
@@ -62,70 +79,17 @@ async function executePruneOperation(
     await ensureSessionInitialized(ctx.client, state, sessionId, logger, messages)
 
     const currentParams = getCurrentParams(state, messages, logger)
-    const toolIdList: string[] = buildToolIdList(state, messages, logger)
-
-    // Validate that all numeric IDs are within bounds
-    if (numericToolIds.some((id) => id < 0 || id >= toolIdList.length)) {
-        logger.debug("Invalid tool IDs provided: " + numericToolIds.join(", "))
-        throw new Error(
-            "Invalid IDs provided. Only use numeric IDs from the <prunable-tools> list.",
-        )
-    }
-
-    // Validate that all IDs exist in cache and aren't protected
-    // (rejects hallucinated IDs and turn-protected tools not shown in <prunable-tools>)
-    for (const index of numericToolIds) {
-        const id = toolIdList[index]
-        const metadata = state.toolParameters.get(id)
-        if (!metadata) {
-            logger.debug(
-                "Rejecting prune request - ID not in cache (turn-protected or hallucinated)",
-                { index, id },
-            )
-            throw new Error(
-                "Invalid IDs provided. Only use numeric IDs from the <prunable-tools> list.",
-            )
-        }
-        const allProtectedTools = config.tools.settings.protectedTools
-        if (allProtectedTools.includes(metadata.tool)) {
-            logger.debug("Rejecting prune request - protected tool", {
-                index,
-                id,
-                tool: metadata.tool,
-            })
-            throw new Error(
-                "Invalid IDs provided. Only use numeric IDs from the <prunable-tools> list.",
-            )
-        }
-
-        const filePath = getFilePathFromParameters(metadata.parameters)
-        if (isProtectedFilePath(filePath, config.protectedFilePatterns)) {
-            logger.debug("Rejecting prune request - protected file path", {
-                index,
-                id,
-                tool: metadata.tool,
-                filePath,
-            })
-            throw new Error(
-                "Invalid IDs provided. Only use numeric IDs from the <prunable-tools> list.",
-            )
-        }
-    }
-
-    const pruneToolIds: string[] = numericToolIds.map((index) => toolIdList[index])
-    state.prune.toolIds.push(...pruneToolIds)
+    const newPruneToolIds = addPruneToolIds(state, pruneToolIds)
 
     const toolMetadata = new Map<string, ToolParameterEntry>()
-    for (const id of pruneToolIds) {
+    for (const id of newPruneToolIds) {
         const toolParameters = state.toolParameters.get(id)
         if (toolParameters) {
             toolMetadata.set(id, toolParameters)
-        } else {
-            logger.debug("No metadata found for ID", { id })
         }
     }
 
-    state.stats.pruneTokenCounter += calculateTokensSaved(state, messages, pruneToolIds)
+    state.stats.pruneTokenCounter += calculateTokensSaved(state, messages, newPruneToolIds)
 
     await sendUnifiedNotification(
         client,
@@ -133,9 +97,8 @@ async function executePruneOperation(
         config,
         state,
         sessionId,
-        pruneToolIds,
+        newPruneToolIds,
         toolMetadata,
-        reason,
         currentParams,
         workingDirectory,
         distillation,
@@ -145,11 +108,14 @@ async function executePruneOperation(
     state.stats.pruneTokenCounter = 0
     state.nudgeCounter = 0
 
+    // Clear the snapshot after use - a fresh list will be generated on next turn
+    state.prunableToolIdList = null
+
     saveSessionState(state, logger).catch((err) =>
         logger.error("Failed to persist state", { error: err.message }),
     )
 
-    return formatPruningResultForTool(pruneToolIds, toolMetadata, workingDirectory)
+    return formatPruningResultForTool(newPruneToolIds, toolMetadata, workingDirectory)
 }
 
 export function createDiscardTool(ctx: PruneToolContext): ReturnType<typeof tool> {
@@ -158,24 +124,11 @@ export function createDiscardTool(ctx: PruneToolContext): ReturnType<typeof tool
         args: {
             ids: tool.schema
                 .array(tool.schema.string())
-                .describe(
-                    "First element is the reason ('completion' or 'noise'), followed by numeric IDs as strings to discard",
-                ),
+                .min(1)
+                .describe("Numeric IDs from <prunable-tools> to discard"),
         },
         async execute(args, toolCtx) {
-            // Parse reason from first element, numeric IDs from the rest
-            const reason = args.ids?.[0]
-            const validReasons = ["completion", "noise"] as const
-            if (typeof reason !== "string" || !validReasons.includes(reason as any)) {
-                ctx.logger.debug("Invalid discard reason provided: " + reason)
-                throw new Error(
-                    "No valid reason found. Use 'completion' or 'noise' as the first element.",
-                )
-            }
-
-            const numericIds = args.ids.slice(1)
-
-            return executePruneOperation(ctx, toolCtx, numericIds, reason as PruneReason, "Discard")
+            return executePruneOperation(ctx, toolCtx, args.ids, "Discard")
         },
     })
 }
@@ -186,35 +139,20 @@ export function createExtractTool(ctx: PruneToolContext): ReturnType<typeof tool
         args: {
             ids: tool.schema
                 .array(tool.schema.string())
-                .describe("Numeric IDs as strings to extract from the <prunable-tools> list"),
+                .min(1)
+                .describe("Numeric IDs from <prunable-tools> to extract"),
             distillation: tool.schema
                 .array(tool.schema.string())
-                .describe(
-                    "REQUIRED. Array of strings, one per ID (positional: distillation[0] is for ids[0], etc.)",
-                ),
+                .min(1)
+                .describe("Distilled content for each ID (positional: distillation[0] for ids[0])"),
         },
         async execute(args, toolCtx) {
-            if (!args.distillation || args.distillation.length === 0) {
-                ctx.logger.debug(
-                    "Extract tool called without distillation: " + JSON.stringify(args),
-                )
+            if (args.ids.length !== args.distillation.length) {
                 throw new Error(
-                    "Missing distillation. You must provide a distillation string for each ID.",
+                    `IDs and distillation must match: ${args.ids.length} IDs, ${args.distillation.length} distillations.`,
                 )
             }
-
-            // Log the distillation for debugging/analysis
-            ctx.logger.info("Distillation data received:")
-            ctx.logger.info(JSON.stringify(args.distillation, null, 2))
-
-            return executePruneOperation(
-                ctx,
-                toolCtx,
-                args.ids,
-                "extraction" as PruneReason,
-                "Extract",
-                args.distillation,
-            )
+            return executePruneOperation(ctx, toolCtx, args.ids, "Extract", args.distillation)
         },
     })
 }

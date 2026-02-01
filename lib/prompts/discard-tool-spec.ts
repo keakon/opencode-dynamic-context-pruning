@@ -1,40 +1,18 @@
-export const DISCARD_TOOL_SPEC = `Discards tool outputs from context to manage conversation size and reduce noise.
+export const DISCARD_TOOL_SPEC = `Discards tool outputs from context.
 
-## IMPORTANT: The Prunable List
-A \`<prunable-tools>\` list is provided to you showing available tool outputs you can discard when there are tools available for pruning. Each line has the format \`ID: tool, parameter\` (e.g., \`20: read, /path/to/file.ts\`). You MUST only use numeric IDs that appear in this list to select which tools to discard.
+## The Prunable List
+A \`<prunable-tools>\` list shows available IDs. Format: \`ID: tool, parameter\`. Only use IDs from this list.
 
-## When to Use This Tool
+## When to Use
+- Noise: Irrelevant or superseded outputs
+- Task done: No valuable info to preserve
 
-Use \`discard\` for removing tool content that is no longer needed
-
-- **Noise:** Irrelevant, unhelpful, or superseded outputs that provide no value.
-- **Task Completion:** Work is complete and there's no valuable information worth preserving.
-
-## When NOT to Use This Tool
-
-- **If the output contains useful information:** Keep it in context rather than discarding.
-- **If you'll need the output later:** Don't discard files you plan to edit or context you'll need for implementation.
-
-## Best Practices
-- **Strategic Batching:** Don't discard single small tool outputs (like short bash commands) unless they are pure noise. Wait until you have several items to perform high-impact discards.
-- **Think ahead:** Before discarding, ask: "Will I need this output for an upcoming task?" If yes, keep it.
+## When NOT to Use
+- Output contains useful info you'll need later
+- You plan to edit the file
 
 ## Format
-
-- \`ids\`: Array where the first element is the reason, followed by numeric IDs from the \`<prunable-tools>\` list
-
-Reasons: \`noise\` | \`completion\`
+- \`ids\`: Array of numeric ID strings from \`<prunable-tools>\`
 
 ## Example
-
-<example_noise>
-Assistant: [Reads 'wrong_file.ts']
-This file isn't relevant to the auth system. I'll remove it to clear the context.
-[Uses discard with ids: ["noise", "5"]]
-</example_noise>
-
-<example_completion>
-Assistant: [Runs tests, they pass]
-The tests passed and I don't need to preserve any details. I'll clean up now.
-[Uses discard with ids: ["completion", "20", "21"]]
-</example_completion>`
+[Uses discard with ids: ["5", "20", "21"]]`
