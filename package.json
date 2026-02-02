@@ -1,11 +1,16 @@
 {
     "$schema": "https://json.schemastore.org/package.json",
-    "name": "@tarquinen/opencode-dcp",
+    "name": "@keakon/opencode-dcp",
     "version": "1.2.8",
     "type": "module",
     "description": "OpenCode plugin that optimizes token usage by pruning obsolete tool outputs from conversation context",
     "main": "./dist/index.js",
     "types": "./dist/index.d.ts",
+    "files": [
+        "dist/",
+        "README.md",
+        "LICENSE"
+    ],
     "scripts": {
         "clean": "rm -rf dist",
         "build": "npm run clean && tsc",
@@ -52,9 +57,7 @@
         "tsx": "^4.21.0",
         "typescript": "^5.9.3"
     },
-    "files": [
-        "dist/",
-        "README.md",
-        "LICENSE"
-    ]
+    "publishConfig": {
+        "access": "public"
+    }
 }

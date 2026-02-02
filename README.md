@@ -1,6 +1,6 @@
 # Dynamic Context Pruning Plugin
 
-[![npm version](https://img.shields.io/npm/v/@tarquinen/opencode-dcp.svg)](https://www.npmjs.com/package/@tarquinen/opencode-dcp)
+[![npm version](https://img.shields.io/npm/v/@keakon/opencode-dcp.svg)](https://npmjs.com/package/@keakon/opencode-dcp)
 
 Automatically reduces token usage in OpenCode by removing obsolete tools from conversation history.
 
@@ -13,7 +13,7 @@ Add to your OpenCode config:
 ```jsonc
 // opencode.jsonc
 {
-    "plugin": ["@tarquinen/opencode-dcp@latest"],
+    "plugin": ["@keakon/opencode-dcp@latest"],
 }
 ```
 
@@ -64,7 +64,7 @@ DCP uses its own config file:
 
 ```jsonc
 {
-    "$schema": "https://raw.githubusercontent.com/Opencode-DCP/opencode-dynamic-context-pruning/master/dcp.schema.json",
+    "$schema": "https://raw.githubusercontent.com/Keakon/opencode-dynamic-context-pruning/master/dcp.schema.json",
     // Enable or disable the plugin
     "enabled": true,
     // Enable debug logging to ~/.config/opencode/logs/dcp/
