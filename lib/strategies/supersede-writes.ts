@@ -30,9 +30,8 @@ export const supersedeWrites = (
         return
     }
 
-    // Filter out IDs already pruned
-    const unprunedIds = allToolIds.filter((id) => !state.prune.toolIdSet.has(id))
-    if (unprunedIds.length === 0) {
+    // Early exit if all IDs are already pruned
+    if (allToolIds.every((id) => state.prune.toolIdSet.has(id))) {
         return
     }
 

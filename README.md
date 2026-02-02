@@ -116,7 +116,7 @@ DCP uses its own config file:
         },
         // Prune write tool inputs when the file has been subsequently read
         "supersedeWrites": {
-            "enabled": false,
+            "enabled": true,
         },
         // Prune tool inputs for errored tools after X turns
         "purgeErrors": {

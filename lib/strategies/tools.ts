@@ -32,7 +32,7 @@ async function executePruneOperation(
     const { client, state, logger, config, workingDirectory } = ctx
     const sessionId = toolCtx.sessionID
 
-    logger.info(`${toolName} tool invoked with ${ids.length} IDs`)
+    logger.info(`${toolName} tool invoked with ${ids.length} IDs (listVersion=${state.prunableListVersion})`)
 
     // Use the snapshot of prunable tool IDs that was saved when <prunable-tools> was generated.
     // This prevents ID shifting issues when new messages arrive between list generation and execution.
@@ -49,16 +49,17 @@ async function executePruneOperation(
         numericToolIds.push(Number(id))
     }
 
-    const processedNumericIds = distillation ? numericToolIds : [...new Set(numericToolIds)]
-
     // For extract operations, each ID has a positional distillation entry.
     // Duplicate IDs would cause the second distillation to be silently lost after dedup,
-    // so reject them early.
+    // so reject them early (before any deduplication).
     if (distillation && new Set(numericToolIds).size !== numericToolIds.length) {
         throw new Error(
             `Duplicate IDs detected in extract operation. Each ID must be unique when using distillation.`,
         )
     }
+
+    // For discard, deduplicate IDs; for extract, keep original order (already validated unique)
+    const processedNumericIds = distillation ? numericToolIds : [...new Set(numericToolIds)]
 
     // Validate all IDs are within bounds of the snapshot
     if (processedNumericIds.some((id) => id < 0 || id >= prunableList.length)) {
@@ -67,8 +68,30 @@ async function executePruneOperation(
         )
     }
 
-    // Resolve numeric IDs to callIDs using the snapshot
-    const pruneToolIds: string[] = processedNumericIds.map((index) => prunableList[index])
+    // Resolve numeric IDs to callIDs using the snapshot, and validate tool names match.
+    // This detects ID drift when the list changes between generation and execution.
+    const pruneToolIds: string[] = []
+    const mismatchedIds: string[] = []
+
+    for (const index of processedNumericIds) {
+        const entry = prunableList[index]
+        const currentMetadata = state.toolParameters.get(entry.callId)
+
+        // Verify the tool name still matches what was shown in the list
+        if (currentMetadata && currentMetadata.tool !== entry.tool) {
+            mismatchedIds.push(
+                `ID ${index}: expected "${entry.tool}", found "${currentMetadata.tool}"`,
+            )
+        }
+        pruneToolIds.push(entry.callId)
+    }
+
+    if (mismatchedIds.length > 0) {
+        throw new Error(
+            `Tool list has changed since generation. Mismatches: ${mismatchedIds.join("; ")}. ` +
+                `Please use IDs from the latest <prunable-tools> list.`,
+        )
+    }
 
     // Filter out already-pruned tools (handles same-turn repeated calls)
     const filteredPruneToolIds = pruneToolIds.filter((id) => !state.prune.toolIdSet.has(id))

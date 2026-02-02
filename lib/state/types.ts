@@ -26,6 +26,11 @@ export interface Prune {
     toolIdSet: Set<string>
 }
 
+export interface PrunableToolEntry {
+    callId: string
+    tool: string
+}
+
 export interface SessionState {
     sessionId: string | null
     isSubAgent: boolean
@@ -40,6 +45,7 @@ export interface SessionState {
     toolIdListCacheHash: string | undefined
     toolIdToIndexCache: Map<string, number> | null
     toolTokensCache: Map<string, number>
-    prunableToolIdList: string[] | null
+    prunableToolIdList: PrunableToolEntry[] | null // Snapshot with callId and tool name for validation
+    prunableListVersion: number // Snapshot version for internal tracking
     aggressivePruneExhausted: boolean
 }

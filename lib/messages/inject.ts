@@ -172,9 +172,15 @@ const buildPrunableToolsList = (
     // Sort by numeric ID for stable, predictable output order
     prunableEntries.sort((a, b) => a.numericId - b.numericId)
 
-    // Save snapshot of the numeric ID → callID mapping for use by discard/extract tools.
-    // This prevents ID shifting when new tool calls arrive between list generation and execution.
-    state.prunableToolIdList = prunableEntries.map((e) => e.id)
+    // Increment snapshot version for internal tracking and debugging.
+    state.prunableListVersion++
+
+    // Save snapshot with both callId and tool name for validation.
+    // This allows detecting ID drift when the list changes between generation and execution.
+    state.prunableToolIdList = prunableEntries.map((e) => ({
+        callId: e.id,
+        tool: e.tool,
+    }))
 
     const lines: string[] = prunableEntries.map((entry, i) => {
         const description = entry.paramKey
@@ -183,7 +189,7 @@ const buildPrunableToolsList = (
         return `${i}: ${description}`
     })
 
-    logger.debug(`Found ${prunableEntries.length} prunable tools`)
+    logger.debug(`Found ${prunableEntries.length} prunable tools (version=${state.prunableListVersion})`)
 
     return wrapPrunableTools(lines.join("\n"))
 }

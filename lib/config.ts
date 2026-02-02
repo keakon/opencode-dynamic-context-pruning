@@ -161,272 +161,87 @@ interface ValidationError {
     actual: string
 }
 
+type ValidatorType = "boolean" | "number" | "string" | "string[]" | string[]
+
+// Declarative schema for config validation
+const CONFIG_SCHEMA: Record<string, ValidatorType> = {
+    enabled: "boolean",
+    debug: "boolean",
+    pruneNotification: ["off", "minimal", "detailed"],
+    protectedFilePatterns: "string[]",
+    "turnProtection.enabled": "boolean",
+    "turnProtection.turns": "number",
+    "tokenBudget.enabled": "boolean",
+    "tokenBudget.warnThreshold": "number",
+    "tokenBudget.criticalThreshold": "number",
+    "commands.enabled": "boolean",
+    "commands.protectedTools": "string[]",
+    "tools.settings.nudgeEnabled": "boolean",
+    "tools.settings.nudgeFrequency": "number",
+    "tools.settings.protectedTools": "string[]",
+    "tools.discard.enabled": "boolean",
+    "tools.extract.enabled": "boolean",
+    "tools.extract.showDistillation": "boolean",
+    "strategies.deduplication.enabled": "boolean",
+    "strategies.deduplication.protectedTools": "string[]",
+    "strategies.supersedeWrites.enabled": "boolean",
+    "strategies.purgeErrors.enabled": "boolean",
+    "strategies.purgeErrors.turns": "number",
+    "strategies.purgeErrors.protectedTools": "string[]",
+}
+
+function getNestedValue(obj: any, path: string): any {
+    return path.split(".").reduce((o, k) => o?.[k], obj)
+}
+
+function validateField(
+    config: Record<string, any>,
+    key: string,
+    validator: ValidatorType,
+): ValidationError | null {
+    const value = getNestedValue(config, key)
+    if (value === undefined) return null
+
+    if (Array.isArray(validator)) {
+        // Enum validation
+        if (!validator.includes(value)) {
+            return { key, expected: validator.map((v) => `"${v}"`).join(" | "), actual: JSON.stringify(value) }
+        }
+    } else if (validator === "string[]") {
+        if (!Array.isArray(value)) {
+            return { key, expected: "string[]", actual: typeof value }
+        }
+        if (!value.every((v) => typeof v === "string")) {
+            return { key, expected: "string[]", actual: "non-string entries" }
+        }
+    } else if (typeof value !== validator) {
+        return { key, expected: validator, actual: typeof value }
+    }
+    return null
+}
+
 function validateConfigTypes(config: Record<string, any>): ValidationError[] {
     const errors: ValidationError[] = []
 
-    // Top-level validators
-    if (config.enabled !== undefined && typeof config.enabled !== "boolean") {
-        errors.push({ key: "enabled", expected: "boolean", actual: typeof config.enabled })
-    }
-    if (config.debug !== undefined && typeof config.debug !== "boolean") {
-        errors.push({ key: "debug", expected: "boolean", actual: typeof config.debug })
-    }
-    if (config.pruneNotification !== undefined) {
-        const validValues = ["off", "minimal", "detailed"]
-        if (!validValues.includes(config.pruneNotification)) {
-            errors.push({
-                key: "pruneNotification",
-                expected: '"off" | "minimal" | "detailed"',
-                actual: JSON.stringify(config.pruneNotification),
-            })
-        }
+    // Schema-based validation
+    for (const [key, validator] of Object.entries(CONFIG_SCHEMA)) {
+        const error = validateField(config, key, validator)
+        if (error) errors.push(error)
     }
 
-    if (config.protectedFilePatterns !== undefined) {
-        if (!Array.isArray(config.protectedFilePatterns)) {
-            errors.push({
-                key: "protectedFilePatterns",
-                expected: "string[]",
-                actual: typeof config.protectedFilePatterns,
-            })
-        } else if (!config.protectedFilePatterns.every((v) => typeof v === "string")) {
-            errors.push({
-                key: "protectedFilePatterns",
-                expected: "string[]",
-                actual: "non-string entries",
-            })
-        }
-    }
-
-    // Top-level turnProtection validator
-    if (config.turnProtection) {
-        if (
-            config.turnProtection.enabled !== undefined &&
-            typeof config.turnProtection.enabled !== "boolean"
-        ) {
-            errors.push({
-                key: "turnProtection.enabled",
-                expected: "boolean",
-                actual: typeof config.turnProtection.enabled,
-            })
-        }
-        if (
-            config.turnProtection.turns !== undefined &&
-            typeof config.turnProtection.turns !== "number"
-        ) {
-            errors.push({
-                key: "turnProtection.turns",
-                expected: "number",
-                actual: typeof config.turnProtection.turns,
-            })
-        }
-    }
-
-    // Top-level tokenBudget validator
-    if (config.tokenBudget) {
-        if (
-            config.tokenBudget.enabled !== undefined &&
-            typeof config.tokenBudget.enabled !== "boolean"
-        ) {
-            errors.push({
-                key: "tokenBudget.enabled",
-                expected: "boolean",
-                actual: typeof config.tokenBudget.enabled,
-            })
-        }
-        const thresholdKeys = ["warnThreshold", "criticalThreshold"] as const
-        for (const key of thresholdKeys) {
-            if (
-                config.tokenBudget[key] !== undefined &&
-                typeof config.tokenBudget[key] !== "number"
-            ) {
-                errors.push({
-                    key: `tokenBudget.${key}`,
-                    expected: "number",
-                    actual: typeof config.tokenBudget[key],
-                })
-            }
-        }
-
-        // Validate threshold monotonicity: warnThreshold ≤ criticalThreshold
-        const { warnThreshold, criticalThreshold } = config.tokenBudget
-        if (
-            typeof warnThreshold === "number" &&
-            typeof criticalThreshold === "number" &&
-            warnThreshold > criticalThreshold
-        ) {
-            errors.push({
-                key: "tokenBudget.warnThreshold",
-                expected: "≤ criticalThreshold",
-                actual: `${warnThreshold} > ${criticalThreshold}`,
-            })
-        }
-    }
-
-    // Commands validator
-    const commands = config.commands
-    if (commands !== undefined) {
-        if (typeof commands === "object") {
-            if (commands.enabled !== undefined && typeof commands.enabled !== "boolean") {
-                errors.push({
-                    key: "commands.enabled",
-                    expected: "boolean",
-                    actual: typeof commands.enabled,
-                })
-            }
-            if (commands.protectedTools !== undefined && !Array.isArray(commands.protectedTools)) {
-                errors.push({
-                    key: "commands.protectedTools",
-                    expected: "string[]",
-                    actual: typeof commands.protectedTools,
-                })
-            }
-        } else {
-            errors.push({
-                key: "commands",
-                expected: "{ enabled: boolean, protectedTools: string[] }",
-                actual: typeof commands,
-            })
-        }
-    }
-
-    // Tools validators
-    const tools = config.tools
-    if (tools) {
-        if (tools.settings) {
-            if (
-                tools.settings.nudgeEnabled !== undefined &&
-                typeof tools.settings.nudgeEnabled !== "boolean"
-            ) {
-                errors.push({
-                    key: "tools.settings.nudgeEnabled",
-                    expected: "boolean",
-                    actual: typeof tools.settings.nudgeEnabled,
-                })
-            }
-            if (
-                tools.settings.nudgeFrequency !== undefined &&
-                typeof tools.settings.nudgeFrequency !== "number"
-            ) {
-                errors.push({
-                    key: "tools.settings.nudgeFrequency",
-                    expected: "number",
-                    actual: typeof tools.settings.nudgeFrequency,
-                })
-            }
-            if (
-                tools.settings.protectedTools !== undefined &&
-                !Array.isArray(tools.settings.protectedTools)
-            ) {
-                errors.push({
-                    key: "tools.settings.protectedTools",
-                    expected: "string[]",
-                    actual: typeof tools.settings.protectedTools,
-                })
-            }
-        }
-        if (tools.discard) {
-            if (tools.discard.enabled !== undefined && typeof tools.discard.enabled !== "boolean") {
-                errors.push({
-                    key: "tools.discard.enabled",
-                    expected: "boolean",
-                    actual: typeof tools.discard.enabled,
-                })
-            }
-        }
-        if (tools.extract) {
-            if (tools.extract.enabled !== undefined && typeof tools.extract.enabled !== "boolean") {
-                errors.push({
-                    key: "tools.extract.enabled",
-                    expected: "boolean",
-                    actual: typeof tools.extract.enabled,
-                })
-            }
-            if (
-                tools.extract.showDistillation !== undefined &&
-                typeof tools.extract.showDistillation !== "boolean"
-            ) {
-                errors.push({
-                    key: "tools.extract.showDistillation",
-                    expected: "boolean",
-                    actual: typeof tools.extract.showDistillation,
-                })
-            }
-        }
-    }
-
-    // Strategies validators
-    const strategies = config.strategies
-    if (strategies) {
-        // deduplication
-        if (
-            strategies.deduplication?.enabled !== undefined &&
-            typeof strategies.deduplication.enabled !== "boolean"
-        ) {
-            errors.push({
-                key: "strategies.deduplication.enabled",
-                expected: "boolean",
-                actual: typeof strategies.deduplication.enabled,
-            })
-        }
-        if (
-            strategies.deduplication?.protectedTools !== undefined &&
-            !Array.isArray(strategies.deduplication.protectedTools)
-        ) {
-            errors.push({
-                key: "strategies.deduplication.protectedTools",
-                expected: "string[]",
-                actual: typeof strategies.deduplication.protectedTools,
-            })
-        }
-
-        // supersedeWrites
-        if (strategies.supersedeWrites) {
-            if (
-                strategies.supersedeWrites.enabled !== undefined &&
-                typeof strategies.supersedeWrites.enabled !== "boolean"
-            ) {
-                errors.push({
-                    key: "strategies.supersedeWrites.enabled",
-                    expected: "boolean",
-                    actual: typeof strategies.supersedeWrites.enabled,
-                })
-            }
-        }
-
-        // purgeErrors
-        if (strategies.purgeErrors) {
-            if (
-                strategies.purgeErrors.enabled !== undefined &&
-                typeof strategies.purgeErrors.enabled !== "boolean"
-            ) {
-                errors.push({
-                    key: "strategies.purgeErrors.enabled",
-                    expected: "boolean",
-                    actual: typeof strategies.purgeErrors.enabled,
-                })
-            }
-            if (
-                strategies.purgeErrors.turns !== undefined &&
-                typeof strategies.purgeErrors.turns !== "number"
-            ) {
-                errors.push({
-                    key: "strategies.purgeErrors.turns",
-                    expected: "number",
-                    actual: typeof strategies.purgeErrors.turns,
-                })
-            }
-            if (
-                strategies.purgeErrors.protectedTools !== undefined &&
-                !Array.isArray(strategies.purgeErrors.protectedTools)
-            ) {
-                errors.push({
-                    key: "strategies.purgeErrors.protectedTools",
-                    expected: "string[]",
-                    actual: typeof strategies.purgeErrors.protectedTools,
-                })
-            }
-        }
+    // Special validation: threshold monotonicity
+    const warnThreshold = config.tokenBudget?.warnThreshold
+    const criticalThreshold = config.tokenBudget?.criticalThreshold
+    if (
+        typeof warnThreshold === "number" &&
+        typeof criticalThreshold === "number" &&
+        warnThreshold > criticalThreshold
+    ) {
+        errors.push({
+            key: "tokenBudget.warnThreshold",
+            expected: "≤ criticalThreshold",
+            actual: `${warnThreshold} > ${criticalThreshold}`,
+        })
     }
 
     return errors
@@ -625,34 +440,40 @@ function loadConfigFile(configPath: string): ConfigLoadResult {
     }
 }
 
+// Helper: merge two arrays and deduplicate
+function mergeArrays<T>(base: T[], override?: T[]): T[] {
+    if (!override || override.length === 0) return base
+    return [...new Set([...base, ...override])]
+}
+
+// Helper: get value with fallback
+function val<T>(override: T | undefined, base: T): T {
+    return override ?? base
+}
+
 function mergeStrategies(
     base: PluginConfig["strategies"],
     override?: Partial<PluginConfig["strategies"]>,
 ): PluginConfig["strategies"] {
     if (!override) return base
-
     return {
         deduplication: {
-            enabled: override.deduplication?.enabled ?? base.deduplication.enabled,
-            protectedTools: [
-                ...new Set([
-                    ...base.deduplication.protectedTools,
-                    ...(override.deduplication?.protectedTools ?? []),
-                ]),
-            ],
+            enabled: val(override.deduplication?.enabled, base.deduplication.enabled),
+            protectedTools: mergeArrays(
+                base.deduplication.protectedTools,
+                override.deduplication?.protectedTools,
+            ),
         },
         supersedeWrites: {
-            enabled: override.supersedeWrites?.enabled ?? base.supersedeWrites.enabled,
+            enabled: val(override.supersedeWrites?.enabled, base.supersedeWrites.enabled),
         },
         purgeErrors: {
-            enabled: override.purgeErrors?.enabled ?? base.purgeErrors.enabled,
-            turns: override.purgeErrors?.turns ?? base.purgeErrors.turns,
-            protectedTools: [
-                ...new Set([
-                    ...base.purgeErrors.protectedTools,
-                    ...(override.purgeErrors?.protectedTools ?? []),
-                ]),
-            ],
+            enabled: val(override.purgeErrors?.enabled, base.purgeErrors.enabled),
+            turns: val(override.purgeErrors?.turns, base.purgeErrors.turns),
+            protectedTools: mergeArrays(
+                base.purgeErrors.protectedTools,
+                override.purgeErrors?.protectedTools,
+            ),
         },
     }
 }
@@ -662,24 +483,21 @@ function mergeTools(
     override?: Partial<PluginConfig["tools"]>,
 ): PluginConfig["tools"] {
     if (!override) return base
-
     return {
         settings: {
-            nudgeEnabled: override.settings?.nudgeEnabled ?? base.settings.nudgeEnabled,
-            nudgeFrequency: override.settings?.nudgeFrequency ?? base.settings.nudgeFrequency,
-            protectedTools: [
-                ...new Set([
-                    ...base.settings.protectedTools,
-                    ...(override.settings?.protectedTools ?? []),
-                ]),
-            ],
+            nudgeEnabled: val(override.settings?.nudgeEnabled, base.settings.nudgeEnabled),
+            nudgeFrequency: val(override.settings?.nudgeFrequency, base.settings.nudgeFrequency),
+            protectedTools: mergeArrays(
+                base.settings.protectedTools,
+                override.settings?.protectedTools,
+            ),
         },
         discard: {
-            enabled: override.discard?.enabled ?? base.discard.enabled,
+            enabled: val(override.discard?.enabled, base.discard.enabled),
         },
         extract: {
-            enabled: override.extract?.enabled ?? base.extract.enabled,
-            showDistillation: override.extract?.showDistillation ?? base.extract.showDistillation,
+            enabled: val(override.extract?.enabled, base.extract.enabled),
+            showDistillation: val(override.extract?.showDistillation, base.extract.showDistillation),
         },
     }
 }
@@ -688,11 +506,10 @@ function mergeCommands(
     base: PluginConfig["commands"],
     override?: Partial<PluginConfig["commands"]>,
 ): PluginConfig["commands"] {
-    if (override === undefined) return base
-
+    if (!override) return base
     return {
-        enabled: override.enabled ?? base.enabled,
-        protectedTools: [...new Set([...base.protectedTools, ...(override.protectedTools ?? [])])],
+        enabled: val(override.enabled, base.enabled),
+        protectedTools: mergeArrays(base.protectedTools, override.protectedTools),
     }
 }
 
@@ -701,11 +518,10 @@ function mergeTokenBudget(
     override?: Partial<PluginConfig["tokenBudget"]>,
 ): PluginConfig["tokenBudget"] {
     if (!override) return base
-
     return {
-        enabled: override.enabled ?? base.enabled,
-        warnThreshold: override.warnThreshold ?? base.warnThreshold,
-        criticalThreshold: override.criticalThreshold ?? base.criticalThreshold,
+        enabled: val(override.enabled, base.enabled),
+        warnThreshold: val(override.warnThreshold, base.warnThreshold),
+        criticalThreshold: val(override.criticalThreshold, base.criticalThreshold),
     }
 }
 

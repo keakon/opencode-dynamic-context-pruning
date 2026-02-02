@@ -113,7 +113,8 @@ export const aggressivePrune = (
         }
     }
 
-    // Tier 2: At criticalThreshold, prune oldest tools until below warnThreshold
+    // Tier 2: At criticalThreshold, prune oldest tools until below warnThreshold.
+    // Note: remainingTokens here is AFTER Tier1 pruning, not the original totalTokens.
     if (remainingTokens >= criticalThreshold) {
         logger.info(
             `Aggressive prune triggered: ${remainingTokens} tokens >= ${criticalThreshold} criticalThreshold`,

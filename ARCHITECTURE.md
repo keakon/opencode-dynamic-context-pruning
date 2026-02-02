@@ -155,6 +155,7 @@ lib/
 SessionState {
   sessionId              # 当前会话 ID
   isSubAgent             # 是否为子代理（子代理禁用 DCP）
+  variant                # 模型变体标识
 
   prune {
     toolIds[]            # 标记为裁剪的工具 ID 列表
@@ -164,7 +165,7 @@ SessionState {
   stats {
     pruneTokenCounter    # 本轮节省的 tokens
     totalPruneTokens     # 累计节省的 tokens
-    currentPrunableTokens # 当前可裁剪的 tokens（决策用）
+    currentPrunableTokens # 当前可裁剪的 tokens（仅计算非保护工具）
   }
 
   toolParameters         # 工具元数据缓存 Map<callId, Entry>
@@ -175,11 +176,17 @@ SessionState {
 
   # 性能缓存
   toolIdListCache        # 所有工具 ID 列表
+  toolIdListCacheHash    # 列表哈希（用于失效检测）
   toolIdToIndexCache     # ID 到索引的映射
   toolTokensCache        # 工具 token 数缓存
-  prunableToolIdList     # 快照：可裁剪工具的 ID 列表
+
+  # 快照（用于 ID 一致性验证）
+  prunableToolIdList     # 快照：可裁剪工具的 {callId, tool} 列表
+  prunableListVersion    # 快照版本号（内部跟踪用）
 }
 ```
+
+**注意**：`currentPrunableTokens` 只统计可裁剪的、非保护的工具输出 token，不包含系统提示、用户消息、AI 回复等。因此实际上下文大小可能远大于此值。
 
 #### 状态生命周期
 
@@ -517,9 +524,13 @@ exhausted 状态：
 **问题**：生成 `<prunable-tools>` 列表和 AI 调用 discard/extract 之间可能有新消息到达，导致数字 ID 与实际工具的映射错位。
 
 **解决方案**：
-1. 生成列表时，保存 `state.prunableToolIdList` 快照
-2. 执行裁剪时，使用快照而非实时列表
-3. 验证 ID 在快照范围内
+1. 生成列表时，保存 `state.prunableToolIdList` 快照（包含 callId 和工具名称）
+2. 同时递增 `state.prunableListVersion`（用于内部跟踪和调试日志）
+3. 执行裁剪时，使用快照而非实时列表
+4. 验证 ID 在快照范围内
+5. 验证 ID 对应的工具名称与快照中记录的一致（检测 ID 漂移）
+
+**工具名称验证**：即使 ID 在范围内，如果快照生成后列表发生了变化（例如某些工具被自动策略裁剪），ID 可能映射到不同的工具。通过比较快照中记录的工具名称与当前 `toolParameters` 中的名称，可以检测此类漂移。
 
 **实现位置**：
 - 保存快照：`lib/messages/inject.ts` - buildPrunableToolsList()
@@ -751,16 +762,12 @@ tokenBudget: {
 | 问题 | 可能原因 | 排查方法 |
 |------|----------|----------|
 | 工具没被裁剪 | 受保护 | 检查 protectedTools 和 protectedFilePatterns |
-| ID 无效错误 | 快照过期 | 检查是否有新消息导致 ID 偏移 |
+| ID 无效错误 | 快照过期或 ID 漂移 | 检查是否有新消息导致列表变化，使用最新列表重试 |
+| 工具名称不匹配错误 | 列表在生成后发生变化 | 使用最新 `<prunable-tools>` 列表中的 ID |
 | 提示太频繁 | 阈值太低 | 调整 warnThreshold 或 nudgeFrequency |
 | 上下文过大 | 需要手动裁剪 | 使用 discard/extract 或等待会话压缩 |
 
-### 10.6 已知优化方向
-
-1. **config.ts 合并函数抽象**：`mergeStrategies`、`mergeTools`、`mergeCommands`、`mergeTokenBudget` 模式重复，可抽象为通用 deep merge + protectedTools 数组合并
-2. **config.ts 验证简化**：`validateConfigTypes` 对每个字段逐一验证（约 250 行），可用泛型验证函数大幅精简
-
-### 10.7 性能优化点
+### 10.6 性能优化点
 
 1. **缓存利用**：toolIdListCache、toolTokensCache 减少重复计算
 2. **Set 查找**：toolIdSet 提供 O(1) 查找
