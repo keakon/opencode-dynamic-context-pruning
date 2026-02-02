@@ -50,12 +50,12 @@ Dynamic Context Pruning (DCP) 是 OpenCode AI 编辑器的插件，通过智能�
 
 ### 2.3 核心设计原则
 
-| 原则 | 描述 |
-|------|------|
-| 分层处理 | 低风险自动处理，高风险 AI 参与 |
+| 原则     | 描述                             |
+| -------- | -------------------------------- |
+| 分层处理 | 低风险自动处理，高风险 AI 参与   |
 | 最小伤害 | 优先删除低价值内容（错误、重复） |
-| 用户优先 | 不强制裁剪，决策权在用户/AI |
-| 幂等安全 | 重复操作不产生副作用 |
+| 用户优先 | 不强制裁剪，决策权在用户/AI      |
+| 幂等安全 | 重复操作不产生副作用             |
 
 ---
 
@@ -103,13 +103,15 @@ Dynamic Context Pruning (DCP) 是 OpenCode AI 编辑器的插件，通过智能�
 ```
 1. checkSession()           ─── 检测会话变化、压缩事件
 2. syncToolCache()          ─── 同步所有工具参数到缓存
-3. deduplicate()            ─── 策略：去重
-4. supersedeWrites()        ─── 策略：超写覆盖
-5. purgeErrors()            ─── 策略：错误清除
-6. aggressivePrune()        ─── 策略：激进裁剪（基于 token 预算）
-7. prune()                  ─── 实际执行裁剪（替换为占位符）
-8. insertPruneToolContext() ─── 注入可裁剪工具列表 + 提示
-9. saveContext()            ─── 持久化日志
+3. 缓存失效检查              ─── 基于消息哈希判断是否清空 token 缓存
+4. deduplicate()            ─── 策略：去重
+5. supersedeWrites()        ─── 策略：超写覆盖
+6. purgeErrors()            ─── 策略：错误清除
+7. aggressivePrune()        ─── 策略：激进裁剪（基于 token 预算）
+8. prune()                  ─── 实际执行裁剪（替换为占位符）
+9. cleanupPruneState()      ─── 定期清理无效的 prune 状态（每 10 轮）
+10. insertPruneToolContext() ─── 注入可裁剪工具列表 + 提示
+11. saveContext()            ─── 持久化日志
 ```
 
 ### 3.3 模块依赖关系
@@ -178,7 +180,9 @@ SessionState {
   toolIdListCache        # 所有工具 ID 列表
   toolIdListCacheHash    # 列表哈希（用于失效检测）
   toolIdToIndexCache     # ID 到索引的映射
+  toolIdToPartCache      # ID 到消息/部分位置的映射（用于 O(1) 查找）
   toolTokensCache        # 工具 token 数缓存
+  toolTokensCacheHash    # token 缓存哈希（基于消息变化失效）
 
   # 快照（用于 ID 一致性验证）
   prunableToolIdList     # 快照：可裁剪工具的 {callId, tool} 列表
@@ -241,13 +245,13 @@ ToolParameterEntry {
 
 #### 关键配置项
 
-| 配置 | 默认值 | 说明 |
-|------|--------|------|
-| `tokenBudget.warnThreshold` | 60000 | warn 警告阈值，触发 Tier1 (error 工具清理)，同时也是所有裁剪的目标线 |
-| `tokenBudget.criticalThreshold` | 100000 | critical 警告阈值，触发 Tier2 (激进裁剪) |
-| `tools.settings.nudgeFrequency` | 10 | 每 N 个工具后提示一次（备用机制） |
-| `turnProtection.turns` | 4 | 新工具的保护轮数 |
-| `strategies.purgeErrors.turns` | 4 | 错误工具的保留轮数 |
+| 配置                            | 默认值 | 说明                                                                 |
+| ------------------------------- | ------ | -------------------------------------------------------------------- |
+| `tokenBudget.warnThreshold`     | 60000  | warn 警告阈值，触发 Tier1 (error 工具清理)，同时也是所有裁剪的目标线 |
+| `tokenBudget.criticalThreshold` | 100000 | critical 警告阈值，触发 Tier2 (激进裁剪)                             |
+| `tools.settings.nudgeFrequency` | 10     | 每 N 个工具后提示一次（备用机制）                                    |
+| `turnProtection.turns`          | 4      | 新工具的保护轮数                                                     |
+| `strategies.purgeErrors.turns`  | 4      | 错误工具的保留轮数                                                   |
 
 **阈值约束**：`warnThreshold ≤ criticalThreshold`，配置加载时会验证此约束。
 
@@ -259,6 +263,7 @@ batch, write, edit, plan_enter, plan_exit
 ```
 
 这些工具的输出默认不会被自动裁剪，因为：
+
 - `task/todowrite/todoread`：任务追踪信息
 - `write/edit`：文件修改可能需要回溯
 - `discard/extract`：DCP 自身的工具
@@ -270,11 +275,11 @@ batch, write, edit, plan_enter, plan_exit
 
 根据启用的工具选择不同的提示词：
 
-| 条件 | 提示词 |
-|------|--------|
-| discard + extract 都启用 | SYSTEM_PROMPT_BOTH |
-| 仅 discard 启用 | SYSTEM_PROMPT_DISCARD |
-| 仅 extract 启用 | SYSTEM_PROMPT_EXTRACT |
+| 条件                     | 提示词                |
+| ------------------------ | --------------------- |
+| discard + extract 都启用 | SYSTEM_PROMPT_BOTH    |
+| 仅 discard 启用          | SYSTEM_PROMPT_DISCARD |
+| 仅 extract 启用          | SYSTEM_PROMPT_EXTRACT |
 
 #### 提示词核心内容
 
@@ -290,13 +295,14 @@ batch, write, edit, plan_enter, plan_exit
 
 三个紧急级别，语气逐渐强硬：
 
-| 级别 | 触发条件 | 语气 |
-|------|----------|------|
-| normal | N+ 工具（N = PRUNABLE_TOOL_THRESHOLD）或 频率触发 | SHOULD prune |
-| warn | >= 60k tokens (warnThreshold) | WARNING... SHOULD prune immediately |
-| critical | >= 100k tokens (criticalThreshold) | CRITICAL... MUST prune NOW |
+| 级别     | 触发条件                                          | 语气                                |
+| -------- | ------------------------------------------------- | ----------------------------------- |
+| normal   | N+ 工具（N = PRUNABLE_TOOL_THRESHOLD）或 频率触发 | SHOULD prune                        |
+| warn     | >= 60k tokens (warnThreshold)                     | WARNING... SHOULD prune immediately |
+| critical | >= 100k tokens (criticalThreshold)                | CRITICAL... MUST prune NOW          |
 
 **设计理念**：系统不自动强制裁剪（自动策略除外），裁剪决策权在 AI：
+
 - 能力下降 ≠ 不可用，某些长任务确实需要超长上下文
 - 超过 100k 时触发 critical + 激进裁剪，但如果裁剪后仍超标则不持续警告
 - 后续轮次静默，直到计数器触发时再次提醒，避免干扰超长任务
@@ -330,11 +336,13 @@ batch, write, edit, plan_enter, plan_exit
 **原理**：相同工具 + 相同参数 = 完全重复的信息
 
 **实现逻辑**：
+
 1. 为每个工具调用创建签名：`tool::JSON(sorted_parameters)`
 2. 按签名分组
 3. 每组仅保留最新的一个，其余标记为裁剪
 
 **参数规范化**：
+
 - 忽略 undefined/null 值
 - 对象键排序确保稳定性
 
@@ -347,12 +355,14 @@ batch, write, edit, plan_enter, plan_exit
 **原理**：write/edit 后又 read 同一文件，write 的输入内容已被 read 结果覆盖
 
 **实现逻辑**：
+
 1. 追踪所有 write/edit 调用及其文件路径和时序索引
 2. 追踪所有 read 调用及其文件路径和时序索引
 3. 对于每个 write，检查是否存在后续的同路径 read
 4. 如果存在，标记该 write 为裁剪
 
 **关键细节**：
+
 - 只删除 write 的**输入内容**（写入了什么）
 - 不删除 write 的**输出结果**（是否成功）
 - 最新文件状态已在 read 结果中捕获
@@ -364,11 +374,13 @@ batch, write, edit, plan_enter, plan_exit
 **原理**：失败命令的输入参数价值低，但错误消息有诊断价值
 
 **实现逻辑**：
+
 1. 找出所有 status=error 的工具
 2. 计算每个工具的"年龄"（当前轮数 - 创建轮数）
 3. 年龄 >= 配置阈值（默认 4 轮）的，标记为裁剪
 
 **裁剪方式**：
+
 - 保留错误消息（AI 仍知道操作失败）
 - 删除输入参数（通常较大）
 
@@ -393,6 +405,7 @@ batch, write, edit, plan_enter, plan_exit
 ```
 
 **设计考量**：
+
 - 渐进式响应：先删低价值内容，必要时再删所有
 - 统一目标线：Tier1 和 Tier2 都削减到 warnThreshold，提供 40k 缓冲空间
 - 时序优先：最新内容通常更相关
@@ -405,6 +418,7 @@ batch, write, edit, plan_enter, plan_exit
 **用途**：完全删除工具输出，不保留任何信息
 
 **适用场景**：
+
 - 噪音（与当前任务无关）
 - 已完成的确认输出（git status, build success）
 - 被新输出取代的旧输出
@@ -415,12 +429,14 @@ batch, write, edit, plan_enter, plan_exit
 **用途**：提炼关键信息后删除原始输出
 
 **适用场景**：
+
 - 研究/分析完成，需要保留结论
 - 大输出中只有部分相关
 - 将来可能引用但不需要原文
 
 **参数格式**：
 使用元组数组 `[[id, distillation], ...]` 而非分离的两个数组，优势：
+
 - ID 和摘要绑定在一起，无法出现数量不匹配
 - 更省 token（无重复键名开销）
 - 符合 AI 边分析边记录的工作流
@@ -498,18 +514,20 @@ exhausted 状态：
 
 ### 6.3 阈值设计原理
 
-| 阈值 | 值 | 设计原理 |
-|------|-----|----------|
-| warnThreshold | 60k | 中等任务刚好触及，触发 warn + Tier1 (error 工具清理)，同时也是所有裁剪的统一目标线 |
-| criticalThreshold | 100k | 业界共识的能力下降点，触发 critical + Tier2 (激进裁剪) |
+| 阈值              | 值   | 设计原理                                                                           |
+| ----------------- | ---- | ---------------------------------------------------------------------------------- |
+| warnThreshold     | 60k  | 中等任务刚好触及，触发 warn + Tier1 (error 工具清理)，同时也是所有裁剪的统一目标线 |
+| criticalThreshold | 100k | 业界共识的能力下降点，触发 critical + Tier2 (激进裁剪)                             |
 
 **抑制机制**：
+
 - 超过 100k 时首次触发 critical + 激进裁剪
 - 如果裁剪后仍超标（可裁剪内容不足），标记 exhausted
 - 后续轮次静默，直到计数器触发时再次提醒
 - 避免频繁干扰超长任务（100k-200k 场景）
 
 **为什么不持续警告**：
+
 - 能力下降 ≠ 不可用，100k+ 只是效率降低
 - 某些复杂任务（大型重构、长链分析）确实需要超长上下文
 - OpenCode 自带会话压缩作为系统级兜底机制
@@ -524,6 +542,7 @@ exhausted 状态：
 **问题**：生成 `<prunable-tools>` 列表和 AI 调用 discard/extract 之间可能有新消息到达，导致数字 ID 与实际工具的映射错位。
 
 **解决方案**：
+
 1. 生成列表时，保存 `state.prunableToolIdList` 快照（包含 callId 和工具名称）
 2. 同时递增 `state.prunableListVersion`（用于内部跟踪和调试日志）
 3. 执行裁剪时，使用快照而非实时列表
@@ -533,6 +552,7 @@ exhausted 状态：
 **工具名称验证**：即使 ID 在范围内，如果快照生成后列表发生了变化（例如某些工具被自动策略裁剪），ID 可能映射到不同的工具。通过比较快照中记录的工具名称与当前 `toolParameters` 中的名称，可以检测此类漂移。
 
 **实现位置**：
+
 - 保存快照：`lib/messages/inject.ts` - buildPrunableToolsList()
 - 使用快照：`lib/strategies/tools.ts` - executePruneOperation()
 
@@ -558,16 +578,19 @@ exhausted 状态：
 ### 7.3 验证与错误处理
 
 **输入验证**：
+
 - ID 必须是数字字符串
 - ID 必须在快照范围内
 - extract 的 IDs 和 distillation 通过元组绑定，结构上保证匹配
 - extract 不允许重复 ID
 
 **幂等性保证**：
+
 - 已裁剪的工具会被过滤
 - 重复调用不产生副作用
 
 **错误反馈**：
+
 - 明确的错误消息帮助 AI 修正调用
 
 ### 7.4 压缩检测
@@ -575,6 +598,7 @@ exhausted 状态：
 **问题**：OpenCode 可能自动压缩历史消息，压缩后的消息不应被处理。
 
 **解决方案**：
+
 1. 检测消息的 `summary=true` 标记
 2. 记录最后压缩时间戳 `lastCompaction`
 3. 压缩后清空所有缓存，重新构建
@@ -585,22 +609,22 @@ exhausted 状态：
 
 ### 8.1 成本项
 
-| 成本类型 | 来源 | 估算 |
-|----------|------|------|
-| 系统提示词 | 每次请求都包含 | ~500-800 tokens |
-| prunable-tools 列表 | 每轮注入 | ~50-200 tokens |
-| nudge 提示 | 触发时注入 | ~50-100 tokens |
-| AI 工具调用 | discard/extract | 请求 + 响应 tokens |
-| KV 缓存失效 | 消息内容修改 | 计算开销 |
+| 成本类型            | 来源            | 估算               |
+| ------------------- | --------------- | ------------------ |
+| 系统提示词          | 每次请求都包含  | ~500-800 tokens    |
+| prunable-tools 列表 | 每轮注入        | ~50-200 tokens     |
+| nudge 提示          | 触发时注入      | ~50-100 tokens     |
+| AI 工具调用         | discard/extract | 请求 + 响应 tokens |
+| KV 缓存失效         | 消息内容修改    | 计算开销           |
 
 ### 8.2 收益项
 
-| 收益类型 | 来源 | 估算 |
-|----------|------|------|
+| 收益类型     | 来源                 | 估算            |
+| ------------ | -------------------- | --------------- |
 | 自动策略节省 | 去重、超写、错误清除 | 20-40% 工具输出 |
-| 激进裁剪节省 | 基于预算的自动裁剪 | 可变，防止溢出 |
-| AI 主动裁剪 | discard/extract | 50-80% 工具输出 |
-| 质量保持 | 避免 100k+ 能力下降 | 难以量化 |
+| 激进裁剪节省 | 基于预算的自动裁剪   | 可变，防止溢出  |
+| AI 主动裁剪  | discard/extract      | 50-80% 工具输出 |
+| 质量保持     | 避免 100k+ 能力下降  | 难以量化        |
 
 ### 8.3 盈亏平衡分析
 
@@ -618,6 +642,7 @@ exhausted 状态：
 ```
 
 **实际情况**：
+
 - 短对话（<5轮）：可能无净收益，但开销可接受
 - 中等对话（5-20轮）：显著净收益
 - 长对话（>20轮）：大幅净收益，且保持质量
@@ -628,18 +653,19 @@ exhausted 状态：
 
 ### 9.1 阈值选择
 
-| 决策 | 选项 | 选择 | 原因 |
-|------|------|------|------|
-| warnThreshold | 30k/50k/60k | 60k | 给中等任务更多空间，减少打扰，同时作为统一目标线 |
-| criticalThreshold | 80k/100k/120k | 100k | 业界共识的能力下降点 |
-| nudgeFrequency | 5/8/10 | 10 | token 预算是主要机制，计数器只是备用 |
-| prunableToolCount | 5/8/10 | 8 | 8 个工具约 8k-16k tokens，更有意义（定义为 `PRUNABLE_TOOL_THRESHOLD` 常量） |
+| 决策              | 选项          | 选择 | 原因                                                                        |
+| ----------------- | ------------- | ---- | --------------------------------------------------------------------------- |
+| warnThreshold     | 30k/50k/60k   | 60k  | 给中等任务更多空间，减少打扰，同时作为统一目标线                            |
+| criticalThreshold | 80k/100k/120k | 100k | 业界共识的能力下降点                                                        |
+| nudgeFrequency    | 5/8/10        | 10   | token 预算是主要机制，计数器只是备用                                        |
+| prunableToolCount | 5/8/10        | 8    | 8 个工具约 8k-16k tokens，更有意义（定义为 `PRUNABLE_TOOL_THRESHOLD` 常量） |
 
 ### 9.2 策略优先级
 
 **选择**：先执行所有自动策略，再让 AI 处理剩余
 
 **原因**：
+
 - 自动策略无额外成本
 - 减少 AI 需要处理的数量
 - AI 只处理需要语义理解的决策
@@ -649,6 +675,7 @@ exhausted 状态：
 **选择**：write 和 edit 默认受保护，不被自动裁剪
 
 **原因**：
+
 - 文件修改可能需要回溯
 - 错误恢复时需要知道做了什么
 - 宁可保守也不丢失关键信息
@@ -660,6 +687,7 @@ exhausted 状态：
 **选择**：使用快照而非实时构建的列表
 
 **原因**：
+
 - 防止 ID 漂移导致误删
 - 确保 AI 看到的列表与执行时一致
 
@@ -670,6 +698,7 @@ exhausted 状态：
 **选择**：normal → warn → critical 三级提示，系统不自动强制裁剪
 
 **原因**：
+
 - 避免系统自动删除用户正在使用的内容
 - AI 根据 MUST/SHOULD 指令强度自主决策
 - OpenCode 会话压缩作为系统级兜底，DCP 无需越界
@@ -679,11 +708,13 @@ exhausted 状态：
 **选择**：`[[id, distillation], ...]` 而非分离的 `ids[]` 和 `distillation[]`
 
 **原因**：
+
 - 结构上保证 ID 和摘要一一对应，无法不匹配
 - 更省 token（无重复键名）
 - 符合 AI 边分析边记录的工作流
 
 **对比**：
+
 ```
 // 分离数组 - 容易数量不匹配
 ids: ["0", "1", "2"]
@@ -698,6 +729,7 @@ distillation: ["摘要1", "摘要2"]  // 少了一个！
 **选择**：提供两种工具而非只有删除
 
 **原因**：
+
 - extract 保留关键信息，减少信息损失
 - 适用于研究/分析场景
 - 用户可选择性启用
@@ -712,9 +744,9 @@ distillation: ["摘要1", "摘要2"]  // 少了一个！
 
 1. 在 `lib/strategies/` 创建新文件
 2. 实现策略函数，签名为：
-   ```
-   (state, logger, config, messages) => void
-   ```
+    ```
+    (state, logger, config, messages) => void
+    ```
 3. 在策略内部调用 `addPruneToolIds()` 标记裁剪
 4. 在 `lib/strategies/index.ts` 导出
 5. 在 `lib/hooks.ts` 的流水线中添加调用
@@ -736,16 +768,19 @@ tokenBudget: {
 ### 10.3 添加新的保护规则
 
 **保护工具名称**：
+
 - 修改 `DEFAULT_PROTECTED_TOOLS` 列表
 - 或在配置中添加到 `tools.settings.protectedTools`
 
 **保护文件路径**：
+
 - 在配置中添加到 `protectedFilePatterns`
 - 支持 glob 模式
 
 ### 10.4 调试指南
 
 **启用调试日志**：
+
 ```json
 { "debug": true }
 ```
@@ -754,25 +789,30 @@ tokenBudget: {
 日志保存在 `~/.local/share/opencode/storage/plugin/dcp/logs/`
 
 **使用 /dcp 命令**：
+
 - `/dcp context`：查看 token 使用细分
 - `/dcp stats`：查看累计统计
 
 ### 10.5 常见问题排查
 
-| 问题 | 可能原因 | 排查方法 |
-|------|----------|----------|
-| 工具没被裁剪 | 受保护 | 检查 protectedTools 和 protectedFilePatterns |
-| ID 无效错误 | 快照过期或 ID 漂移 | 检查是否有新消息导致列表变化，使用最新列表重试 |
-| 工具名称不匹配错误 | 列表在生成后发生变化 | 使用最新 `<prunable-tools>` 列表中的 ID |
-| 提示太频繁 | 阈值太低 | 调整 warnThreshold 或 nudgeFrequency |
-| 上下文过大 | 需要手动裁剪 | 使用 discard/extract 或等待会话压缩 |
+| 问题               | 可能原因             | 排查方法                                       |
+| ------------------ | -------------------- | ---------------------------------------------- |
+| 工具没被裁剪       | 受保护               | 检查 protectedTools 和 protectedFilePatterns   |
+| ID 无效错误        | 快照过期或 ID 漂移   | 检查是否有新消息导致列表变化，使用最新列表重试 |
+| 工具名称不匹配错误 | 列表在生成后发生变化 | 使用最新 `<prunable-tools>` 列表中的 ID        |
+| 提示太频繁         | 阈值太低             | 调整 warnThreshold 或 nudgeFrequency           |
+| 上下文过大         | 需要手动裁剪         | 使用 discard/extract 或等待会话压缩            |
 
 ### 10.6 性能优化点
 
 1. **缓存利用**：toolIdListCache、toolTokensCache 减少重复计算
 2. **Set 查找**：toolIdSet 提供 O(1) 查找
-3. **惰性计算**：token 计数仅在需要时计算
+3. **惰性计算**：token 计数仅在需要时计算；0 值不缓存以处理 running→completed 状态转换
 4. **FIFO 淘汰**：toolParameters 超过 1000 时淘汰最旧条目
+5. **哈希失效**：toolTokensCache 基于消息哈希 + tool state 摘要失效，覆盖同一消息内状态变化
+6. **索引查找**：toolIdToPartCache 提供 O(1) 的工具位置查找，替代 O(N×M) 遍历
+7. **状态清理**：定期清理 prune 状态中不再存在的 toolId，防止内存增长
+8. **日志优化**：enabled 检查前置，避免禁用时的堆栈捕获开销
 
 ---
 

@@ -26,3 +26,17 @@ export const addPruneToolIds = (state: SessionState, ids: string[]): string[] =>
     }
     return added
 }
+
+/**
+ * Clean up prune state by removing toolIds that no longer exist in messages.
+ * Should be called after compaction or periodically to prevent memory growth.
+ */
+export const cleanupPruneState = (state: SessionState, validToolIds: Set<string>): number => {
+    const originalCount = state.prune.toolIds.length
+
+    // Filter to keep only valid tool IDs
+    state.prune.toolIds = state.prune.toolIds.filter((id) => validToolIds.has(id))
+    state.prune.toolIdSet = new Set(state.prune.toolIds)
+
+    return originalCount - state.prune.toolIds.length
+}

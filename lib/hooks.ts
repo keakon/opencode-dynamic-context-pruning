@@ -10,6 +10,8 @@ import { handleStatsCommand } from "./commands/stats"
 import { handleContextCommand } from "./commands/context"
 import { handleHelpCommand } from "./commands/help"
 import { handleSweepCommand } from "./commands/sweep"
+import { cleanupPruneState } from "./shared-utils"
+import { buildToolIdList, computeLastMsgToolStateHash } from "./messages/utils"
 
 const INTERNAL_AGENT_SIGNATURES = [
     "You are a title generator",
@@ -67,7 +69,25 @@ export function createChatMessageTransformHandler(
 
         syncToolCache(state, config, logger, output.messages)
 
-        state.toolTokensCache.clear()
+        // Invalidate token cache when message structure or tool states change
+        // Includes tool state hash to detect content updates within the same message
+        const lastMsgId =
+            output.messages.length > 0
+                ? output.messages[output.messages.length - 1].info.id
+                : undefined
+        const toolStateHash = computeLastMsgToolStateHash(output.messages)
+        const tokenCacheHash =
+            output.messages.length +
+            "_" +
+            lastMsgId +
+            "_" +
+            state.lastCompaction +
+            "_" +
+            toolStateHash
+        if (state.toolTokensCacheHash !== tokenCacheHash) {
+            state.toolTokensCache.clear()
+            state.toolTokensCacheHash = tokenCacheHash
+        }
 
         deduplicate(state, logger, config, output.messages)
         supersedeWrites(state, logger, config, output.messages)
@@ -75,6 +95,15 @@ export function createChatMessageTransformHandler(
         aggressivePrune(state, logger, config, output.messages)
 
         prune(state, output.messages)
+
+        // Periodic cleanup: remove stale prune IDs every 10 turns to prevent memory growth
+        if (state.currentTurn > 0 && state.currentTurn % 10 === 0) {
+            const validToolIds = new Set(buildToolIdList(state, output.messages))
+            const removed = cleanupPruneState(state, validToolIds)
+            if (removed > 0) {
+                logger.debug("Cleaned up stale prune IDs", { removed })
+            }
+        }
 
         insertPruneToolContext(state, config, logger, output.messages)
 

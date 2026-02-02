@@ -6,6 +6,24 @@ const SYNTHETIC_MESSAGE_ID = "msg_01234567890123456789012345"
 const SYNTHETIC_PART_ID = "prt_01234567890123456789012345"
 const SYNTHETIC_CALL_ID = "call_01234567890123456789012345"
 
+/**
+ * Compute a lightweight hash of tool part states in the last message.
+ * Used to detect content updates within the same message (e.g., running→completed).
+ * Format: "status1,status2,..." for tool parts, or empty string if no tools.
+ */
+export function computeLastMsgToolStateHash(messages: WithParts[]): string {
+    if (messages.length === 0) return ""
+    const lastMsg = messages[messages.length - 1]
+    const parts = Array.isArray(lastMsg.parts) ? lastMsg.parts : []
+    const toolStates: string[] = []
+    for (const part of parts) {
+        if (part.type === "tool" && part.state) {
+            toolStates.push(part.state.status || "unknown")
+        }
+    }
+    return toolStates.join(",")
+}
+
 export const isDeepSeekOrKimi = (providerID: string, modelID: string): boolean => {
     const lowerProviderID = providerID.toLowerCase()
     const lowerModelID = modelID.toLowerCase()
@@ -235,16 +253,19 @@ export function buildToolIdList(state: SessionState, messages: WithParts[]): str
         return state.toolIdListCache
     }
     const toolIds: string[] = []
-    for (const msg of messages) {
+    const toolIdToPartCache = new Map<string, { msgIndex: number; partIndex: number }>()
+
+    for (let msgIndex = 0; msgIndex < messages.length; msgIndex++) {
+        const msg = messages[msgIndex]
         if (isMessageCompacted(state, msg)) {
             continue
         }
         const parts = Array.isArray(msg.parts) ? msg.parts : []
-        if (parts.length > 0) {
-            for (const part of parts) {
-                if (part.type === "tool" && part.callID && part.tool) {
-                    toolIds.push(part.callID)
-                }
+        for (let partIndex = 0; partIndex < parts.length; partIndex++) {
+            const part = parts[partIndex]
+            if (part.type === "tool" && part.callID && part.tool) {
+                toolIds.push(part.callID)
+                toolIdToPartCache.set(part.callID, { msgIndex, partIndex })
             }
         }
     }
@@ -254,6 +275,7 @@ export function buildToolIdList(state: SessionState, messages: WithParts[]): str
     for (let i = 0; i < toolIds.length; i++) {
         state.toolIdToIndexCache.set(toolIds[i], i)
     }
+    state.toolIdToPartCache = toolIdToPartCache
     return toolIds
 }
 

@@ -3,7 +3,12 @@ import { UserMessage } from "@opencode-ai/sdk/v2"
 import { Logger } from "../logger"
 import { countTokens as anthropicCountTokens } from "@anthropic-ai/tokenizer"
 import { getLastUserMessage, isMessageCompacted } from "../shared-utils"
-import { PRUNED_INPUT, PRUNED_OUTPUT, PRUNED_QUESTIONS, getPrunableContent } from "../messages/prune"
+import {
+    PRUNED_INPUT,
+    PRUNED_OUTPUT,
+    PRUNED_QUESTIONS,
+    getPrunableContent,
+} from "../messages/prune"
 import { buildToolIdList } from "../messages/utils"
 
 export function getCurrentParams(
@@ -61,17 +66,36 @@ export function getUnprunedToolIds(state: SessionState, messages: WithParts[]): 
 /**
  * Calculates token count for a single tool call.
  * Returns 0 if the tool has no prunable content.
+ * Note: Zero values are not cached to handle running→completed state transitions.
  */
 export function getToolTokens(state: SessionState, messages: WithParts[], toolId: string): number {
     const cached = state.toolTokensCache.get(toolId)
     if (cached !== undefined) return cached
 
     const tokens = computeToolTokens(state, messages, toolId)
-    state.toolTokensCache.set(toolId, tokens)
+    // Only cache non-zero values to handle state transitions (running→completed)
+    // Running tools return 0, but once completed they have actual token counts
+    if (tokens > 0) {
+        state.toolTokensCache.set(toolId, tokens)
+    }
     return tokens
 }
 
 function computeToolTokens(state: SessionState, messages: WithParts[], toolId: string): number {
+    // Use indexed lookup if available (O(1) instead of O(N×M))
+    const partLocation = state.toolIdToPartCache?.get(toolId)
+    if (partLocation) {
+        const msg = messages[partLocation.msgIndex]
+        if (msg && !isMessageCompacted(state, msg)) {
+            const parts = Array.isArray(msg.parts) ? msg.parts : []
+            const part = parts[partLocation.partIndex]
+            if (part && part.type === "tool" && part.callID === toolId) {
+                return computePartTokens(part)
+            }
+        }
+    }
+
+    // Fallback to linear scan if index miss (shouldn't happen normally)
     for (const msg of messages) {
         if (isMessageCompacted(state, msg)) {
             continue
@@ -81,27 +105,32 @@ function computeToolTokens(state: SessionState, messages: WithParts[], toolId: s
             if (part.type !== "tool" || part.callID !== toolId) {
                 continue
             }
-            if (part.state.status === "completed") {
-                if (part.tool === "question") {
-                    const content = getPrunableContent(part.state.input?.questions, PRUNED_QUESTIONS)
-                    return content ? countTokens(content) : 0
-                } else {
-                    const content = getPrunableContent(part.state.output, PRUNED_OUTPUT)
-                    return content ? countTokens(content) : 0
-                }
-            } else if (part.state.status === "error") {
-                const input = part.state.input
-                if (input && typeof input === "object") {
-                    let tokens = 0
-                    for (const value of Object.values(input)) {
-                        const content = getPrunableContent(value, PRUNED_INPUT)
-                        if (content) {
-                            tokens += countTokens(content)
-                        }
-                    }
-                    return tokens
+            return computePartTokens(part)
+        }
+    }
+    return 0
+}
+
+function computePartTokens(part: any): number {
+    if (part.state.status === "completed") {
+        if (part.tool === "question") {
+            const content = getPrunableContent(part.state.input?.questions, PRUNED_QUESTIONS)
+            return content ? countTokens(content) : 0
+        } else {
+            const content = getPrunableContent(part.state.output, PRUNED_OUTPUT)
+            return content ? countTokens(content) : 0
+        }
+    } else if (part.state.status === "error") {
+        const input = part.state.input
+        if (input && typeof input === "object") {
+            let tokens = 0
+            for (const value of Object.values(input)) {
+                const content = getPrunableContent(value, PRUNED_INPUT)
+                if (content) {
+                    tokens += countTokens(content)
                 }
             }
+            return tokens
         }
     }
     return 0

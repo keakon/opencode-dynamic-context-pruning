@@ -43,6 +43,9 @@ export const checkSession = async (
         state.toolIdListCache = null
         state.toolIdListCacheHash = undefined
         state.toolIdToIndexCache = null
+        state.toolIdToPartCache = null
+        state.toolTokensCache.clear()
+        state.toolTokensCacheHash = undefined
         state.prunableToolIdList = null
         state.prunableListVersion = 0
         logger.info("Detected compaction from messages - cleared tool cache", {
@@ -74,7 +77,9 @@ export function createSessionState(): SessionState {
         toolIdListCache: null,
         toolIdListCacheHash: undefined,
         toolIdToIndexCache: null,
+        toolIdToPartCache: null,
         toolTokensCache: new Map(),
+        toolTokensCacheHash: undefined,
         prunableToolIdList: null,
         prunableListVersion: 0,
         aggressivePruneExhausted: false,
@@ -95,7 +100,9 @@ export function resetSessionState(state: SessionState): void {
     state.toolIdListCache = fresh.toolIdListCache
     state.toolIdListCacheHash = fresh.toolIdListCacheHash
     state.toolIdToIndexCache = fresh.toolIdToIndexCache
+    state.toolIdToPartCache = fresh.toolIdToPartCache
     state.toolTokensCache.clear()
+    state.toolTokensCacheHash = fresh.toolTokensCacheHash
     state.prunableToolIdList = fresh.prunableToolIdList
     state.prunableListVersion = fresh.prunableListVersion
     state.aggressivePruneExhausted = fresh.aggressivePruneExhausted

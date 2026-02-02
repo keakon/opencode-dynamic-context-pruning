@@ -44,7 +44,9 @@ export interface SessionState {
     toolIdListCache: string[] | null
     toolIdListCacheHash: string | undefined
     toolIdToIndexCache: Map<string, number> | null
+    toolIdToPartCache: Map<string, { msgIndex: number; partIndex: number }> | null // Index for O(1) part lookup
     toolTokensCache: Map<string, number>
+    toolTokensCacheHash: string | undefined // Hash for invalidation (msgLength_lastMsgId_lastCompaction)
     prunableToolIdList: PrunableToolEntry[] | null // Snapshot with callId and tool name for validation
     prunableListVersion: number // Snapshot version for internal tracking
     aggressivePruneExhausted: boolean
