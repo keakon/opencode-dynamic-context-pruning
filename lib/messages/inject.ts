@@ -20,6 +20,58 @@ import { getToolTokens } from "../strategies/utils"
 
 type NudgeUrgency = "none" | "normal" | "warn" | "critical"
 
+/**
+ * Regex to match <prunable-tools>...</prunable-tools> blocks and trailing whitespace.
+ * Uses non-greedy matching to handle multiple blocks correctly.
+ */
+const PRUNABLE_TOOLS_REGEX = /<prunable-tools>[\s\S]*?<\/prunable-tools>\s*/g
+
+/**
+ * Clean historical <prunable-tools> content from messages.
+ *
+ * Each request injects a new prunable-tools list, but the old injections
+ * remain in historical messages. Since the content changes each time
+ * (tool count, IDs, etc.), this breaks Anthropic's prefix caching mechanism,
+ * causing cache_creation to grow continuously while cache_read stays low.
+ *
+ * By cleaning historical injections, we keep message content stable and
+ * maximize prompt cache hit rate.
+ */
+const cleanHistoricalPrunableTools = (messages: WithParts[]): void => {
+    // Skip if there are fewer than 2 messages (nothing historical to clean)
+    if (messages.length < 2) {
+        return
+    }
+
+    // Iterate all messages except the last one (which will receive new injection)
+    for (let i = 0; i < messages.length - 1; i++) {
+        const msg = messages[i]
+        let modified = false
+
+        for (const part of msg.parts) {
+            if (part.type === "text" && typeof part.text === "string") {
+                // Reset regex lastIndex for correct matching with global flag
+                PRUNABLE_TOOLS_REGEX.lastIndex = 0
+                const newText = part.text.replace(PRUNABLE_TOOLS_REGEX, "").trim()
+                if (newText !== part.text) {
+                    part.text = newText
+                    modified = true
+                }
+            }
+        }
+
+        if (modified) {
+            // Remove empty text parts to avoid affecting cache hash
+            msg.parts = msg.parts.filter((part) => {
+                if (part.type === "text" && typeof part.text === "string") {
+                    return part.text.length > 0
+                }
+                return true
+            })
+        }
+    }
+}
+
 const getNudgeString = (config: PluginConfig, urgency: NudgeUrgency): string => {
     if (urgency === "none") {
         return ""
@@ -132,12 +184,14 @@ const buildPrunableToolsList = (
             continue
         }
 
-        if (isToolCallProtected(
-            toolParameterEntry.tool,
-            toolParameterEntry.parameters,
-            allProtectedTools,
-            config.protectedFilePatterns,
-        )) {
+        if (
+            isToolCallProtected(
+                toolParameterEntry.tool,
+                toolParameterEntry.parameters,
+                allProtectedTools,
+                config.protectedFilePatterns,
+            )
+        ) {
             continue
         }
 
@@ -189,7 +243,9 @@ const buildPrunableToolsList = (
         return `${i}: ${description}`
     })
 
-    logger.debug(`Found ${prunableEntries.length} prunable tools (version=${state.prunableListVersion})`)
+    logger.debug(
+        `Found ${prunableEntries.length} prunable tools (version=${state.prunableListVersion})`,
+    )
 
     return wrapPrunableTools(lines.join("\n"))
 }
@@ -204,15 +260,30 @@ export const insertPruneToolContext = (
         return
     }
 
+    // Clean historical prunable-tools injections to maintain stable message content
+    // for better Anthropic Prompt Caching hit rate
+    cleanHistoricalPrunableTools(messages)
+
     const prunableToolsList = buildPrunableToolsList(state, config, logger, messages)
     if (!prunableToolsList) {
         return
     }
 
-    logger.debug("prunable-tools: \n" + prunableToolsList)
-
     const prunableToolCount = state.prunableToolIdList?.length ?? 0
     const nudgeUrgency = getNudgeUrgency(state, config, prunableToolCount)
+
+    // On-demand injection: skip when no nudge is triggered
+    // on_warn mode: skip unless warn or critical (more cache-friendly)
+    const injectMode = config.tools.settings.injectPrunableTools ?? "on_demand"
+    if (injectMode === "on_demand" && nudgeUrgency === "none") {
+        return
+    }
+    if (injectMode === "on_warn" && (nudgeUrgency === "none" || nudgeUrgency === "normal")) {
+        return
+    }
+
+    logger.debug("prunable-tools: \n" + prunableToolsList)
+
     let nudgeString = ""
     if (nudgeUrgency !== "none") {
         logger.info(`Inserting prune nudge message (urgency: ${nudgeUrgency})`)

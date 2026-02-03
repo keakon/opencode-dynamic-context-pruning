@@ -111,6 +111,12 @@
                                 "edit"
                             ],
                             "description": "Tool names that should be protected from automatic pruning"
+                        },
+                        "injectPrunableTools": {
+                            "type": "string",
+                            "enum": ["always", "on_demand", "on_warn"],
+                            "default": "on_demand",
+                            "description": "When to inject prunable-tools list: 'always' (every turn), 'on_demand' (when nudge triggers including normal, recommended), 'on_warn' (only warn/critical, best cache hit rate)"
                         }
                     }
                 },
@@ -222,6 +228,41 @@
                                 "edit"
                             ],
                             "description": "Tool names excluded from error purging"
+                        }
+                    }
+                },
+                "purgeStaleOutputs": {
+                    "type": "object",
+                    "description": "Remove stale tool outputs based on age and count threshold",
+                    "additionalProperties": false,
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean",
+                            "default": true,
+                            "description": "Enable purge stale outputs strategy"
+                        },
+                        "turns": {
+                            "type": "number",
+                            "default": 5,
+                            "description": "Number of turns after which outputs are considered stale"
+                        },
+                        "minPrunableCount": {
+                            "type": "number",
+                            "default": 10,
+                            "description": "Minimum number of prunable tools before triggering this strategy"
+                        },
+                        "preserveRecent": {
+                            "type": "number",
+                            "default": 3,
+                            "description": "Number of recent outputs per tool type to preserve"
+                        },
+                        "protectedTools": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            },
+                            "default": [],
+                            "description": "Additional tool names to protect from stale output purging"
                         }
                     }
                 }

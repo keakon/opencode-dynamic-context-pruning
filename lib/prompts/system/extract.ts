@@ -4,7 +4,7 @@ export const SYSTEM_PROMPT_EXTRACT = `<system-reminder>
 <instruction name=context_management_protocol policy_level=critical>
 
 ENVIRONMENT
-Context is limited. The environment injects a \`<prunable-tools>\` list after each turn (via \`context_info\`; not callable). Only those IDs are valid.
+Context is limited. The environment may inject a \`<prunable-tools>\` list when pruning is needed (via \`context_info\`; not callable). Only those IDs are valid.
 
 CONTEXT MANAGEMENT TOOL
 - \`extract\`: Distill key findings before removing raw content. Preserves signal while reducing size.

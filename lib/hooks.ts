@@ -2,7 +2,13 @@ import type { SessionState, WithParts } from "./state"
 import type { Logger } from "./logger"
 import type { PluginConfig } from "./config"
 import { syncToolCache } from "./state/tool-cache"
-import { deduplicate, supersedeWrites, purgeErrors, aggressivePrune } from "./strategies"
+import {
+    deduplicate,
+    supersedeWrites,
+    purgeErrors,
+    purgeStaleOutputs,
+    aggressivePrune,
+} from "./strategies"
 import { prune, insertPruneToolContext } from "./messages"
 import { checkSession } from "./state"
 import { loadPrompt } from "./prompts"
@@ -92,6 +98,7 @@ export function createChatMessageTransformHandler(
         deduplicate(state, logger, config, output.messages)
         supersedeWrites(state, logger, config, output.messages)
         purgeErrors(state, logger, config, output.messages)
+        purgeStaleOutputs(state, logger, config, output.messages)
         aggressivePrune(state, logger, config, output.messages)
 
         prune(state, output.messages)

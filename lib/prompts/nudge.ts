@@ -15,10 +15,14 @@ WARNING: Context usage is high. You SHOULD prune immediately after completing th
 Failure to prune will degrade response quality.
 </instruction>`,
         critical: `<instruction name=context_management_critical priority=critical>
-CRITICAL: Context is near capacity. You MUST prune NOW before taking any other action.
-- Discard all noise, errors, and superseded outputs immediately.
-- Extract insights from any valuable content, then discard the raw output.
-Do not ignore this warning. Context overflow will severely impact performance.
+[ACTION REQUIRED] Context is near capacity. You MUST prune IMMEDIATELY.
+
+STOP what you are doing. Before your next response, you MUST:
+1. Call \`discard\` or \`extract\` with IDs from the prunable-tools list above.
+2. Remove ALL noise, errors, superseded outputs, and old file reads.
+3. Extract insights from valuable content, then discard the raw output.
+
+This is NOT optional. Failure to prune NOW will cause context overflow and severely degrade performance.
 </instruction>`,
     },
     discard: {
@@ -30,9 +34,13 @@ WARNING: Context usage is high. You SHOULD discard outputs immediately after com
 Failure to discard will degrade response quality.
 </instruction>`,
         critical: `<instruction name=context_management_critical priority=critical>
-CRITICAL: Context is near capacity. You MUST discard NOW before taking any other action.
-Discard all noise, errors, and superseded outputs immediately.
-Do not ignore this warning. Context overflow will severely impact performance.
+[ACTION REQUIRED] Context is near capacity. You MUST discard IMMEDIATELY.
+
+STOP what you are doing. Before your next response, you MUST:
+1. Call \`discard\` with IDs from the prunable-tools list above.
+2. Remove ALL noise, errors, superseded outputs, and old file reads.
+
+This is NOT optional. Failure to discard NOW will cause context overflow and severely degrade performance.
 </instruction>`,
     },
     extract: {
@@ -44,9 +52,13 @@ WARNING: Context usage is high. You SHOULD extract key findings and remove raw o
 Failure to extract will degrade response quality.
 </instruction>`,
         critical: `<instruction name=context_management_critical priority=critical>
-CRITICAL: Context is near capacity. You MUST extract NOW before taking any other action.
-Extract all valuable insights, then remove the raw outputs.
-Do not ignore this warning. Context overflow will severely impact performance.
+[ACTION REQUIRED] Context is near capacity. You MUST extract IMMEDIATELY.
+
+STOP what you are doing. Before your next response, you MUST:
+1. Call \`extract\` with IDs from the prunable-tools list above.
+2. Extract ALL valuable insights from old outputs, then remove the raw content.
+
+This is NOT optional. Failure to extract NOW will cause context overflow and severely degrade performance.
 </instruction>`,
     },
 }

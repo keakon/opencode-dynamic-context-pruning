@@ -50,12 +50,19 @@ Dynamic Context Pruning (DCP) 是 OpenCode AI 编辑器的插件，通过智能�
 
 ### 2.3 核心设计原则
 
-| 原则     | 描述                             |
-| -------- | -------------------------------- |
-| 分层处理 | 低风险自动处理，高风险 AI 参与   |
-| 最小伤害 | 优先删除低价值内容（错误、重复） |
-| 用户优先 | 不强制裁剪，决策权在用户/AI      |
-| 幂等安全 | 重复操作不产生副作用             |
+| 原则         | 描述                                   |
+| ------------ | -------------------------------------- |
+| 自动策略优先 | 依赖插件自动裁剪 > 依赖模型主动裁剪    |
+| 分层处理     | 低风险自动处理，高风险 AI 参与         |
+| 最小伤害     | 优先删除低价值内容（错误、重复、过时） |
+| 用户优先     | 不强制裁剪，决策权在用户/AI            |
+| 幂等安全     | 重复操作不产生副作用                   |
+
+**为什么自动策略优先**：
+
+- 模型专注于用户任务时容易忽略"裁剪"这个元任务
+- 不同模型/版本对 nudge 提示的响应程度不同
+- 自动策略稳定可靠，不破坏缓存，不依赖模型"自觉"
 
 ---
 
@@ -84,7 +91,8 @@ Dynamic Context Pruning (DCP) 是 OpenCode AI 编辑器的插件，通过智能�
     │  ├─ Session State   │     │  ├─ Deduplication   │
     │  ├─ Tool Cache      │     │  ├─ SupersedeWrites │
     │  └─ Persistence     │     │  ├─ PurgeErrors     │
-    └─────────────────────┘     │  └─ AggressivePrune │
+    └─────────────────────┘     │  ├─ PurgeStaleOutputs│
+                                │  └─ AggressivePrune │
                                 └─────────────────────┘
                                           │
                               ┌───────────┴───────────┐
@@ -107,11 +115,13 @@ Dynamic Context Pruning (DCP) 是 OpenCode AI 编辑器的插件，通过智能�
 4. deduplicate()            ─── 策略：去重
 5. supersedeWrites()        ─── 策略：超写覆盖
 6. purgeErrors()            ─── 策略：错误清除
-7. aggressivePrune()        ─── 策略：激进裁剪（基于 token 预算）
-8. prune()                  ─── 实际执行裁剪（替换为占位符）
-9. cleanupPruneState()      ─── 定期清理无效的 prune 状态（每 10 轮）
-10. insertPruneToolContext() ─── 注入可裁剪工具列表 + 提示
-11. saveContext()            ─── 持久化日志
+7. purgeStaleOutputs()      ─── 策略：过时输出清除（基于工具数量和年龄）
+8. aggressivePrune()        ─── 策略：激进裁剪（基于 token 预算）
+9. prune()                  ─── 实际执行裁剪（替换为占位符）
+10. cleanupPruneState()     ─── 定期清理无效的 prune 状态（每 10 轮）
+11. cleanHistoricalPrunableTools() ─── 清理历史消息中的旧 prunable-tools 注入
+12. insertPruneToolContext() ─── 按需注入可裁剪工具列表 + 提示（on_demand 模式）
+13. saveContext()            ─── 持久化日志
 ```
 
 ### 3.3 模块依赖关系
@@ -130,6 +140,7 @@ lib/
 │   ├── deduplication.ts     # 去重策略
 │   ├── supersede-writes.ts  # 超写覆盖策略
 │   ├── purge-errors.ts      # 错误清除策略
+│   ├── purge-stale-outputs.ts # 过时输出清除策略
 │   ├── aggressive-prune.ts  # 激进裁剪策略
 │   ├── tools.ts             # discard/extract 工具
 │   └── utils.ts             # 通用工具函数
@@ -245,13 +256,15 @@ ToolParameterEntry {
 
 #### 关键配置项
 
-| 配置                            | 默认值 | 说明                                                                 |
-| ------------------------------- | ------ | -------------------------------------------------------------------- |
-| `tokenBudget.warnThreshold`     | 60000  | warn 警告阈值，触发 Tier1 (error 工具清理)，同时也是所有裁剪的目标线 |
-| `tokenBudget.criticalThreshold` | 100000 | critical 警告阈值，触发 Tier2 (激进裁剪)                             |
-| `tools.settings.nudgeFrequency` | 10     | 每 N 个工具后提示一次（备用机制）                                    |
-| `turnProtection.turns`          | 4      | 新工具的保护轮数                                                     |
-| `strategies.purgeErrors.turns`  | 4      | 错误工具的保留轮数                                                   |
+| 配置                                 | 默认值    | 说明                                                                 |
+| ------------------------------------ | --------- | -------------------------------------------------------------------- |
+| `tokenBudget.warnThreshold`          | 60000     | warn 警告阈值，触发 Tier1 (error 工具清理)，同时也是所有裁剪的目标线 |
+| `tokenBudget.criticalThreshold`      | 100000    | critical 警告阈值，触发 Tier2 (激进裁剪)                             |
+| `tools.settings.nudgeFrequency`      | 10        | 每 N 个工具后提示一次（备用机制）                                    |
+| `tools.settings.injectPrunableTools` | on_demand | 注入模式：always/on_demand/on_warn                                   |
+| `turnProtection.turns`               | 4         | 新工具的保护轮数                                                     |
+| `strategies.purgeErrors.turns`       | 4         | 错误工具的保留轮数                                                   |
+| `strategies.purgeStaleOutputs.turns` | 5         | 过时输出的年龄阈值                                                   |
 
 **阈值约束**：`warnThreshold ≤ criticalThreshold`，配置加载时会验证此约束。
 
@@ -295,11 +308,11 @@ batch, write, edit, plan_enter, plan_exit
 
 三个紧急级别，语气逐渐强硬：
 
-| 级别     | 触发条件                                          | 语气                                |
-| -------- | ------------------------------------------------- | ----------------------------------- |
-| normal   | N+ 工具（N = PRUNABLE_TOOL_THRESHOLD）或 频率触发 | SHOULD prune                        |
-| warn     | >= 60k tokens (warnThreshold)                     | WARNING... SHOULD prune immediately |
-| critical | >= 100k tokens (criticalThreshold)                | CRITICAL... MUST prune NOW          |
+| 级别     | 触发条件                                          | 语气                                     | 是否注入列表 (on_demand 模式) |
+| -------- | ------------------------------------------------- | ---------------------------------------- | ----------------------------- |
+| normal   | N+ 工具（N = PRUNABLE_TOOL_THRESHOLD）或 频率触发 | SHOULD prune                             | ✅ 注入                       |
+| warn     | >= 60k tokens (warnThreshold)                     | WARNING... SHOULD prune immediately      | ✅ 注入                       |
+| critical | >= 100k tokens (criticalThreshold)                | CRITICAL... MUST prune NOW, 强制要求裁剪 | ✅ 注入                       |
 
 **设计理念**：系统不自动强制裁剪（自动策略除外），裁剪决策权在 AI：
 
@@ -327,8 +340,8 @@ batch, write, edit, plan_enter, plan_exit
     │               │               │
     │               │               │
     ▼               ▼               ▼
-错误清除策略
-(90% 安全)
+错误清除策略   过时输出清除策略
+(90% 安全)    (基于工具数量和年龄)
 ```
 
 ### 5.2 去重策略 (Deduplication)
@@ -386,7 +399,43 @@ batch, write, edit, plan_enter, plan_exit
 
 **风险等级**：极低 - 失败输入很少需要回溯
 
-### 5.5 激进裁剪策略 (AggressivePrune)
+### 5.5 过时输出清除策略 (PurgeStaleOutputs)
+
+**原理**：超过一定轮数的工具输出通常不再被引用，可以安全删除
+
+**触发条件**：
+
+- 可裁剪工具数量 >= `minPrunableCount`（默认 10）
+- 工具输出年龄 >= `turns`（默认 5 轮）
+
+**实现逻辑**：
+
+1. 统计可裁剪工具数量
+2. 如果数量 >= minPrunableCount，扫描所有工具
+3. 按工具类型分组，计算每个工具的年龄
+4. 对于年龄 >= turns 的工具，保留最近 `preserveRecent` 个同类工具
+5. 其余标记为裁剪
+
+**配置项**：
+
+```
+strategies.purgeStaleOutputs: {
+  enabled: true,
+  turns: 5,           // 超过 5 轮视为过时
+  minPrunableCount: 10,  // 可裁剪数量 >= 10 时触发
+  preserveRecent: 3,  // 保留最近 3 个同类工具
+  protectedTools: []  // 额外保护的工具类型
+}
+```
+
+**风险等级**：低 - 旧输出很少被回溯，且保留最近同类工具
+
+**与激进裁剪的区别**：
+
+- purgeStaleOutputs：基于工具数量和年龄，保留同类工具的最近几个
+- aggressivePrune：基于 token 预算，按时序删除最旧的
+
+### 5.6 激进裁剪策略 (AggressivePrune)
 
 **原理**：基于 token 预算自动裁剪内容，减轻 AI 手动裁剪负担
 
@@ -411,7 +460,7 @@ batch, write, edit, plan_enter, plan_exit
 - 时序优先：最新内容通常更相关
 - 职责分离：DCP 负责智能裁剪，OpenCode 会话压缩作为兜底机制
 
-### 5.6 AI 工具：discard 与 extract
+### 5.7 AI 工具：discard 与 extract
 
 #### discard
 
@@ -736,6 +785,44 @@ distillation: ["摘要1", "摘要2"]  // 少了一个！
 
 **取舍**：extract 需要额外 token（distillation），但保留更多价值
 
+### 9.8 清理历史 prunable-tools 注入
+
+**选择**：每次注入新的 `<prunable-tools>` 前，清理历史消息中残留的旧注入
+
+**原因**：
+
+- Anthropic Prompt Caching 采用**前缀匹配**机制
+- 历史消息中残留的 `<prunable-tools>` 内容每次都会变化（工具数量、ID 等）
+- 这会破坏前缀缓存，导致 `cache_creation` 持续增长而 `cache_read` 无法复用
+- 清理后，历史消息保持稳定，缓存命中率可从 ~30% 提升到 ~70%+
+
+**取舍**：
+
+- 需要遍历历史消息进行清理（O(N) 复杂度）
+- 但收益显著：API 费用可节省 50-70%
+
+**不影响功能的原因**：
+
+- `<prunable-tools>` 是"当前可裁剪列表"的快照
+- 历史快照已过期，AI 应使用最新列表
+- ID 快照机制（9.4）确保了执行时的一致性
+
+**按需注入**：
+
+`tools.settings.injectPrunableTools` 支持三种模式：
+
+| 模式      | 行为                                       | 缓存影响 |
+| --------- | ------------------------------------------ | -------- |
+| always    | 每次都注入 `<prunable-tools>` 列表         | 高       |
+| on_demand | nudge 触发时注入（包括 normal 级别，默认） | 中       |
+| on_warn   | 仅 warn/critical 时注入                    | 低       |
+
+**为什么 on_demand 是最佳选择**：
+
+- **normal 级别注入**：当工具数量达到阈值时，模型可以主动裁剪
+- **与系统提示一致**：系统提示要求 "8+ outputs → SHOULD prune"，需要列表才能执行
+- **平衡缓存与功能**：仅在需要时注入，比 always 更节省缓存
+
 ---
 
 ## 10. 扩展与维护指南
@@ -813,6 +900,7 @@ tokenBudget: {
 6. **索引查找**：toolIdToPartCache 提供 O(1) 的工具位置查找，替代 O(N×M) 遍历
 7. **状态清理**：定期清理 prune 状态中不再存在的 toolId，防止内存增长
 8. **日志优化**：enabled 检查前置，避免禁用时的堆栈捕获开销
+9. **Prompt Caching 优化**：清理历史消息中残留的 `<prunable-tools>` 块，保持消息内容稳定以最大化 Anthropic API 的前缀缓存命中率
 
 ---
 
@@ -838,18 +926,37 @@ state.prune.toolIdSet.add()            │
 ### B. 提示注入流程
 
 ```
-buildPrunableToolsList()        insertPruneToolContext()
-        │                              │
-        ▼                              ▼
-遍历 toolParameters            获取 prunableToolsList
-        │                              │
-        ▼                              ▼
-过滤：已裁剪、受保护、无内容    计算 nudgeUrgency
-        │                              │
-        ▼                              ▼
-保存快照到 prunableToolIdList   生成 nudgeString
-        │                              │
-        ▼                              ▼
-生成数字 ID 列表               注入到 messages
-"0: read, /path/file"          (根据模型类型选择注入方式)
+insertPruneToolContext()
+        │
+        ├──► cleanHistoricalPrunableTools()
+        │           │
+        │           ▼
+        │    遍历历史消息
+        │           │
+        │           ▼
+        │    移除 <prunable-tools> 块
+        │    （保持前缀缓存稳定）
+        │
+        ├──► buildPrunableToolsList()
+        │           │
+        │           ▼
+        │    遍历 toolParameters
+        │           │
+        │           ▼
+        │    过滤：已裁剪、受保护、无内容
+        │           │
+        │           ▼
+        │    保存快照到 prunableToolIdList
+        │           │
+        │           ▼
+        │    生成数字 ID 列表
+        │    "0: read, /path/file"
+        │
+        ├──► 计算 nudgeUrgency
+        │           │
+        │           ▼
+        │    生成 nudgeString
+        │
+        └──► 注入到 messages
+             （根据模型类型选择注入方式）
 ```

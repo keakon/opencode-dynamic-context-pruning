@@ -22,6 +22,7 @@ export interface ToolSettings {
     nudgeEnabled: boolean
     nudgeFrequency: number
     protectedTools: string[]
+    injectPrunableTools: "always" | "on_demand" | "on_warn"
 }
 
 export interface Tools {
@@ -42,6 +43,14 @@ export interface SupersedeWrites {
 export interface PurgeErrors {
     enabled: boolean
     turns: number
+    protectedTools: string[]
+}
+
+export interface PurgeStaleOutputs {
+    enabled: boolean
+    turns: number
+    minPrunableCount: number
+    preserveRecent: number
     protectedTools: string[]
 }
 
@@ -69,6 +78,7 @@ export interface PluginConfig {
         deduplication: Deduplication
         supersedeWrites: SupersedeWrites
         purgeErrors: PurgeErrors
+        purgeStaleOutputs: PurgeStaleOutputs
     }
 }
 
@@ -115,6 +125,7 @@ export const VALID_CONFIG_KEYS = new Set([
     "tools.settings.nudgeEnabled",
     "tools.settings.nudgeFrequency",
     "tools.settings.protectedTools",
+    "tools.settings.injectPrunableTools",
     "tools.discard",
     "tools.discard.enabled",
     "tools.extract",
@@ -133,6 +144,13 @@ export const VALID_CONFIG_KEYS = new Set([
     "strategies.purgeErrors.enabled",
     "strategies.purgeErrors.turns",
     "strategies.purgeErrors.protectedTools",
+    // strategies.purgeStaleOutputs
+    "strategies.purgeStaleOutputs",
+    "strategies.purgeStaleOutputs.enabled",
+    "strategies.purgeStaleOutputs.turns",
+    "strategies.purgeStaleOutputs.minPrunableCount",
+    "strategies.purgeStaleOutputs.preserveRecent",
+    "strategies.purgeStaleOutputs.protectedTools",
 ])
 
 // Extract all key paths from a config object for validation
@@ -179,6 +197,7 @@ const CONFIG_SCHEMA: Record<string, ValidatorType> = {
     "tools.settings.nudgeEnabled": "boolean",
     "tools.settings.nudgeFrequency": "number",
     "tools.settings.protectedTools": "string[]",
+    "tools.settings.injectPrunableTools": ["always", "on_demand", "on_warn"],
     "tools.discard.enabled": "boolean",
     "tools.extract.enabled": "boolean",
     "tools.extract.showDistillation": "boolean",
@@ -188,6 +207,11 @@ const CONFIG_SCHEMA: Record<string, ValidatorType> = {
     "strategies.purgeErrors.enabled": "boolean",
     "strategies.purgeErrors.turns": "number",
     "strategies.purgeErrors.protectedTools": "string[]",
+    "strategies.purgeStaleOutputs.enabled": "boolean",
+    "strategies.purgeStaleOutputs.turns": "number",
+    "strategies.purgeStaleOutputs.minPrunableCount": "number",
+    "strategies.purgeStaleOutputs.preserveRecent": "number",
+    "strategies.purgeStaleOutputs.protectedTools": "string[]",
 }
 
 function getNestedValue(obj: any, path: string): any {
@@ -205,7 +229,11 @@ function validateField(
     if (Array.isArray(validator)) {
         // Enum validation
         if (!validator.includes(value)) {
-            return { key, expected: validator.map((v) => `"${v}"`).join(" | "), actual: JSON.stringify(value) }
+            return {
+                key,
+                expected: validator.map((v) => `"${v}"`).join(" | "),
+                actual: JSON.stringify(value),
+            }
         }
     } else if (validator === "string[]") {
         if (!Array.isArray(value)) {
@@ -316,6 +344,7 @@ const defaultConfig: PluginConfig = {
             nudgeEnabled: true,
             nudgeFrequency: 10,
             protectedTools: [...DEFAULT_PROTECTED_TOOLS],
+            injectPrunableTools: "on_demand",
         },
         discard: {
             enabled: true,
@@ -336,6 +365,13 @@ const defaultConfig: PluginConfig = {
         purgeErrors: {
             enabled: true,
             turns: 4,
+            protectedTools: [],
+        },
+        purgeStaleOutputs: {
+            enabled: true,
+            turns: 5,
+            minPrunableCount: 10,
+            preserveRecent: 3,
             protectedTools: [],
         },
     },
@@ -475,6 +511,22 @@ function mergeStrategies(
                 override.purgeErrors?.protectedTools,
             ),
         },
+        purgeStaleOutputs: {
+            enabled: val(override.purgeStaleOutputs?.enabled, base.purgeStaleOutputs.enabled),
+            turns: val(override.purgeStaleOutputs?.turns, base.purgeStaleOutputs.turns),
+            minPrunableCount: val(
+                override.purgeStaleOutputs?.minPrunableCount,
+                base.purgeStaleOutputs.minPrunableCount,
+            ),
+            preserveRecent: val(
+                override.purgeStaleOutputs?.preserveRecent,
+                base.purgeStaleOutputs.preserveRecent,
+            ),
+            protectedTools: mergeArrays(
+                base.purgeStaleOutputs.protectedTools,
+                override.purgeStaleOutputs?.protectedTools,
+            ),
+        },
     }
 }
 
@@ -491,13 +543,20 @@ function mergeTools(
                 base.settings.protectedTools,
                 override.settings?.protectedTools,
             ),
+            injectPrunableTools: val(
+                override.settings?.injectPrunableTools,
+                base.settings.injectPrunableTools,
+            ),
         },
         discard: {
             enabled: val(override.discard?.enabled, base.discard.enabled),
         },
         extract: {
             enabled: val(override.extract?.enabled, base.extract.enabled),
-            showDistillation: val(override.extract?.showDistillation, base.extract.showDistillation),
+            showDistillation: val(
+                override.extract?.showDistillation,
+                base.extract.showDistillation,
+            ),
         },
     }
 }
@@ -555,14 +614,15 @@ function deepCloneConfig(config: PluginConfig): PluginConfig {
                 ...config.strategies.purgeErrors,
                 protectedTools: [...config.strategies.purgeErrors.protectedTools],
             },
+            purgeStaleOutputs: {
+                ...config.strategies.purgeStaleOutputs,
+                protectedTools: [...config.strategies.purgeStaleOutputs.protectedTools],
+            },
         },
     }
 }
 
-function mergeConfigOverride(
-    config: PluginConfig,
-    data: Record<string, any>,
-): PluginConfig {
+function mergeConfigOverride(config: PluginConfig, data: Record<string, any>): PluginConfig {
     return {
         enabled: data.enabled ?? config.enabled,
         debug: data.debug ?? config.debug,
@@ -574,10 +634,7 @@ function mergeConfigOverride(
         },
         tokenBudget: mergeTokenBudget(config.tokenBudget, data.tokenBudget),
         protectedFilePatterns: [
-            ...new Set([
-                ...config.protectedFilePatterns,
-                ...(data.protectedFilePatterns ?? []),
-            ]),
+            ...new Set([...config.protectedFilePatterns, ...(data.protectedFilePatterns ?? [])]),
         ],
         tools: mergeTools(config.tools, data.tools as any),
         strategies: mergeStrategies(config.strategies, data.strategies as any),
