@@ -172,7 +172,14 @@ export async function handleSweepCommand(ctx: SweepCommandContext): Promise<void
             newToolIds.push(id)
             continue
         }
-        if (isToolCallProtected(entry.tool, entry.parameters, protectedTools, config.protectedFilePatterns)) {
+        if (
+            isToolCallProtected(
+                entry.tool,
+                entry.parameters,
+                protectedTools,
+                config.protectedFilePatterns,
+            )
+        ) {
             logger.debug(`Sweep: skipping protected tool ${entry.tool} (${id})`)
             skippedProtected++
             continue

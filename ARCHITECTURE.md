@@ -120,8 +120,10 @@ Dynamic Context Pruning (DCP) 是 OpenCode AI 编辑器的插件，通过智能�
 9. prune()                  ─── 实际执行裁剪（替换为占位符）
 10. cleanupPruneState()     ─── 定期清理无效的 prune 状态（每 10 轮）
 11. cleanHistoricalPrunableTools() ─── 清理历史消息中的旧 prunable-tools 注入
-12. insertPruneToolContext() ─── 按需注入可裁剪工具列表 + 提示（on_demand 模式）
-13. saveContext()            ─── 持久化日志
+12. [可选] injectAdvisorSuggestion() ─── 注入小模型裁剪建议（如果有）
+13. insertPruneToolContext() ─── 按需注入可裁剪工具列表 + 提示（on_demand 模式）
+14. [可选] triggerAdvisorAnalysis() ─── 异步触发小模型分析（如果满足条件）
+15. saveContext()            ─── 持久化日志
 ```
 
 ### 3.3 模块依赖关系
@@ -144,6 +146,16 @@ lib/
 │   ├── aggressive-prune.ts  # 激进裁剪策略
 │   ├── tools.ts             # discard/extract 工具
 │   └── utils.ts             # 通用工具函数
+├── advisor/                 # [可选] 小模型裁剪建议
+│   ├── index.ts             # 模块导出
+│   ├── types.ts             # 类型定义
+│   ├── trigger.ts           # 触发条件检查
+│   ├── analyze.ts           # 小模型调用（临时会话）
+│   ├── prompt.ts            # 提示词构建
+│   ├── parse.ts             # 响应解析
+│   ├── inject.ts            # 建议注入
+│   ├── feedback.ts          # 反馈收集
+│   └── context.ts           # 分析上下文构建
 ├── messages/
 │   ├── prune.ts             # 消息内容修改
 │   ├── inject.ts            # 上下文注入
@@ -337,11 +349,11 @@ batch, write, edit, plan_enter, plan_exit
     ▼               ▼               ▼          ▼               ▼
 去重策略      超写覆盖策略     激进裁剪策略   discard        extract
 (100% 安全)   (95% 安全)      (基于预算)     (完全删除)     (提炼后删除)
-    │               │               │
-    │               │               │
-    ▼               ▼               ▼
-错误清除策略   过时输出清除策略
-(90% 安全)    (基于工具数量和年龄)
+    │               │               │              ▲
+    │               │               │              │
+    ▼               ▼               ▼              │
+错误清除策略   过时输出清除策略              小模型 Advisor
+(90% 安全)    (基于工具数量和年龄)          (语义分析建议)
 ```
 
 ### 5.2 去重策略 (Deduplication)
@@ -490,6 +502,86 @@ strategies.purgeStaleOutputs: {
 - 更省 token（无重复键名开销）
 - 符合 AI 边分析边记录的工作流
 
+### 5.8 小模型 Advisor（可选功能）
+
+> 详细设计见 [docs/SMALL_MODEL_ADVISOR.md](docs/SMALL_MODEL_ADVISOR.md)
+
+**原理**：使用 OpenCode 配置的 `small_model` 异步分析上下文，生成裁剪建议供主模型参考。
+
+**工作流程**：
+
+```
+1. 触发条件：tokens >= tokenThreshold(40k) && prunableCount >= minPrunableCount(5) && 无待处理建议
+2. 异步分析：创建临时会话 → 调用小模型 → 删除临时会话
+3. 建议注入：下一轮注入 <advisor-suggestion> 到上下文
+4. 主模型决策：接纳(调用 discard/extract) / 拒绝(忽略)
+5. 反馈学习：被拒绝的内容获得保护期，影响后续建议
+```
+
+**为什么选择"建议"而非"直接执行"**：
+
+| 方案           | 优点                     | 缺点                                   |
+| -------------- | ------------------------ | -------------------------------------- |
+| 小模型直接裁剪 | 实现简单                 | 可能与主模型思路不一致，误删需要的内容 |
+| 小模型提供建议 | 主模型保留决策权，更安全 | 需要注入机制，消耗少量主模型 token     |
+
+选择建议模式，因为：
+
+- 小模型能力有限，可能误判内容重要性
+- 主模型可能正在进行多步操作，某些看似无用的内容实际仍在使用
+- 建议被拒绝后可以反馈给小模型，提升后续判断质量
+
+**反馈学习机制**：
+
+```
+被拒绝的内容 → 保护期 = 3 × rejectCount 轮
+
+第 1 次拒绝：保护 3 轮
+第 2 次拒绝：保护 6 轮
+第 3 次拒绝：保护 9 轮
+```
+
+**Fallback 轮询机制**：
+
+当小模型遇到速率限制(429)、服务不可用(503)或网络错误时，按配置顺序尝试备用模型：
+
+- **首个成功 → 不动**：索引不变，下次继续用同一个模型
+- **经过 fallback 才成功 → 切换**：索引更新到成功的模型
+- **全部失败 → 移动**：索引移到下一个位置，避免反复卡在失败模型
+
+**suppressNudge 机制**：
+
+启用 Advisor 后默认禁用主模型的 normal/warn 级别 nudge 提示（`suppressNudge: true`），让主模型专注于用户任务，裁剪决策完全由 Advisor 建议驱动。critical 级别提示始终保留作为最后警告。
+
+**与现有机制的关系**：
+
+| 机制     | 职责                    | 触发方式       |
+| -------- | ----------------------- | -------------- |
+| 自动策略 | 低风险裁剪              | 每轮自动执行   |
+| 激进裁剪 | 基于 token 预算自动裁剪 | 超过阈值时自动 |
+| Advisor  | 语义分析，提供建议      | 超过阈值时异步 |
+| AI 工具  | 最终执行裁剪            | 主模型主动调用 |
+
+**配置**：
+
+```jsonc
+{
+    "smallModelAdvisor": {
+        "enabled": true, // 默认关闭
+        "minPrunableCount": 5, // 比主模型阈值(8)更低
+        "tokenThreshold": 40000, // 比 warnThreshold(60k) 更低
+        "timeout": 10000,
+        "contentPreviewLength": 200,
+        "suppressNudge": true, // 禁用 normal/warn 级别 nudge
+        "fallbackModels": [
+            // 小模型调用失败时轮询的备用模型
+            "openai/gpt-4o-mini",
+            "anthropic/claude-3-haiku",
+        ],
+    },
+}
+```
+
 ---
 
 ## 6. 裁剪时机与触发机制
@@ -586,24 +678,185 @@ exhausted 状态：
 
 ## 7. 正确性保证机制
 
-### 7.1 ID 快照机制
+### 7.1 稳定 ID 分配机制
 
-**问题**：生成 `<prunable-tools>` 列表和 AI 调用 discard/extract 之间可能有新消息到达，导致数字 ID 与实际工具的映射错位。
+**问题**：基于位置索引的 ID 分配会导致 ID 漂移——当某些工具输出被删除后，剩余工具的 ID 会发生变化，导致模型使用旧 ID 时可能误删其他内容。
 
-**解决方案**：
+```
+问题场景（旧方案）：
+T1: 工具输出 [A, B, C, D] → 列表 [0:A, 1:B, 2:C, 3:D]
+T2: 删除 B → 工具输出 [A, C, D]
+T3: 重新生成列表 → [0:A, 1:C, 2:D]  ← ID 1 现在指向 C！
+T4: 模型用旧 ID 1 调用 Discard → 误删 C
+```
 
-1. 生成列表时，保存 `state.prunableToolIdList` 快照（包含 callId 和工具名称）
-2. 同时递增 `state.prunableListVersion`（用于内部跟踪和调试日志）
-3. 执行裁剪时，使用快照而非实时列表
-4. 验证 ID 在快照范围内
-5. 验证 ID 对应的工具名称与快照中记录的一致（检测 ID 漂移）
+**解决方案**：使用递增计数器分配稳定 ID，ID 一旦分配就不再复用。
 
-**工具名称验证**：即使 ID 在范围内，如果快照生成后列表发生了变化（例如某些工具被自动策略裁剪），ID 可能映射到不同的工具。通过比较快照中记录的工具名称与当前 `toolParameters` 中的名称，可以检测此类漂移。
+```
+稳定 ID 方案：
+T1: 工具输出 [A, B, C, D] → 分配 ID [1:A, 2:B, 3:C, 4:D]
+T2: 删除 B → 从映射表中移除 ID 2，但计数器不回退
+T3: 新工具输出 E → 分配 ID 5:E（不复用 ID 2）
+T4: 列表 [1:A, 3:C, 4:D, 5:E]  ← ID 保持稳定
+T5: 模型用旧 ID 2 调用 Discard → "ID 2 不存在"（不会误删）
+```
+
+**核心数据结构**：
+
+```typescript
+interface DCPState {
+    // ID 分配（从 1 开始，0 保留）
+    nextToolId: number // 递增计数器，只增不减
+    toolIdMap: Map<number, string> // numericId -> callId
+    callIdToNumericId: Map<string, number> // callId -> numericId（反向索引）
+}
+```
+
+**关键特性**：
+
+1. **ID 不复用**：计数器只增不减，已分配的 ID 不会被重新分配
+2. **裁剪后清理**：工具输出被裁剪后，从 `toolIdMap` 中删除对应条目
+3. **内存可控**：`toolIdMap` 大小 = 当前未裁剪的工具数量
+4. **压缩后重置**：检测到历史压缩后，重置计数器为 1，清空映射表
+
+**ID 分配逻辑**：
+
+```typescript
+function getOrAssignToolId(state: DCPState, callId: string): number {
+    // 检查是否已分配
+    const existingId = state.callIdToNumericId.get(callId)
+    if (existingId !== undefined) return existingId
+
+    // 分配新 ID（递增，不复用）
+    const newId = state.nextToolId++
+    state.toolIdMap.set(newId, callId)
+    state.callIdToNumericId.set(callId, newId)
+    return newId
+}
+```
+
+**裁剪时清理**：
+
+```typescript
+function onToolPruned(state: DCPState, callId: string): void {
+    const numericId = state.callIdToNumericId.get(callId)
+    if (numericId !== undefined) {
+        state.toolIdMap.delete(numericId)
+        state.callIdToNumericId.delete(callId)
+    }
+}
+```
+
+**压缩事件处理**：
+
+OpenCode 提供了 `session.compacted` 事件，可以直接监听而无需自行检测：
+
+```typescript
+// hooks.ts - event hook
+async event({ event }) {
+    if (event.type === "session.compacted") {
+        const sessionID = event.properties.sessionID
+        const state = getSessionState(sessionID)
+
+        // 重置 ID 分配状态
+        state.nextToolId = 1
+        state.toolIdMap.clear()
+        state.callIdToNumericId.clear()
+        state.unprunedIds.clear()
+        state.listProvidedAfterReset = false  // 禁止裁剪，直到提供新列表
+
+        logger.info(`[DCP] Session ${sessionID} compacted, ID state reset`)
+    }
+}
+```
+
+**重置后的裁剪保护**：
+
+```typescript
+function validatePruneRequest(state: DCPState): void {
+    // 压缩重置后，必须先提供新列表，才允许裁剪
+    if (!state.listProvidedAfterReset) {
+        throw new Error(
+            "Context was compressed. Please wait for a fresh <prunable-tools> list before pruning.",
+        )
+    }
+}
+
+// 在生成新列表后，标记为已提供
+function onListProvided(state: DCPState): void {
+    state.listProvidedAfterReset = true
+}
+```
+
+**状态流转**：
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ 正常状态                                                        │
+│   listProvidedAfterReset = true                                 │
+│   → 允许裁剪                                                    │
+│                                                                 │
+│         ↓ 收到 session.compacted 事件                           │
+│                                                                 │
+│ 重置状态                                                        │
+│   listProvidedAfterReset = false                                │
+│   → 拒绝裁剪，返回错误提示                                       │
+│                                                                 │
+│         ↓ 生成并注入新列表                                       │
+│                                                                 │
+│ 恢复正常                                                        │
+│   listProvidedAfterReset = true                                 │
+│   → 允许裁剪                                                    │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**重置后的裁剪保护**：
+
+```typescript
+function validatePruneRequest(state: DCPState): void {
+    // 压缩重置后，必须先提供新列表，才允许裁剪
+    if (!state.listProvidedAfterReset) {
+        throw new Error(
+            "Context was compressed. Please wait for a fresh <prunable-tools> list before pruning.",
+        )
+    }
+}
+
+// 在生成新列表后，标记为已提供
+function onListProvided(state: DCPState): void {
+    state.listProvidedAfterReset = true
+}
+```
+
+**状态流转**：
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ 正常状态                                                        │
+│   listProvidedAfterReset = true                                 │
+│   → 允许裁剪                                                    │
+│                                                                 │
+│         ↓ 检测到压缩                                            │
+│                                                                 │
+│ 重置状态                                                        │
+│   listProvidedAfterReset = false                                │
+│   → 拒绝裁剪，返回错误提示                                       │
+│                                                                 │
+│         ↓ 生成并注入新列表                                       │
+│                                                                 │
+│ 恢复正常                                                        │
+│   listProvidedAfterReset = true                                 │
+│   → 允许裁剪                                                    │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 **实现位置**：
 
-- 保存快照：`lib/messages/inject.ts` - buildPrunableToolsList()
-- 使用快照：`lib/strategies/tools.ts` - executePruneOperation()
+- ID 分配：`lib/messages/inject.ts` - buildPrunableToolsList()
+- ID 验证：`lib/strategies/tools.ts` - executePruneOperation()
+- 裁剪清理：`lib/strategies/tools.ts` - 裁剪完成后调用
+- 压缩检测：`lib/hooks.ts` - messages.transform 开始时
+- 状态管理：`lib/state/state.ts`
 
 ### 7.2 多层保护机制
 

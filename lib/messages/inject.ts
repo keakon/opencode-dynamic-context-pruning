@@ -17,6 +17,8 @@ import { isToolCallProtected } from "../protected-file-patterns"
 import { getLastUserMessage } from "../shared-utils"
 import { truncate } from "../ui/utils"
 import { getToolTokens } from "../strategies/utils"
+import type { AdvisorState } from "../advisor/types"
+import { shouldSuppressNudge } from "../advisor/trigger"
 
 type NudgeUrgency = "none" | "normal" | "warn" | "critical"
 
@@ -255,6 +257,7 @@ export const insertPruneToolContext = (
     config: PluginConfig,
     logger: Logger,
     messages: WithParts[],
+    advisorState?: AdvisorState,
 ): void => {
     if (!config.tools.discard.enabled && !config.tools.extract.enabled) {
         return
@@ -286,8 +289,18 @@ export const insertPruneToolContext = (
 
     let nudgeString = ""
     if (nudgeUrgency !== "none") {
-        logger.info(`Inserting prune nudge message (urgency: ${nudgeUrgency})`)
-        nudgeString = "\n" + getNudgeString(config, nudgeUrgency)
+        // Check if nudge should be suppressed by advisor
+        const suppress =
+            advisorState &&
+            nudgeUrgency !== "critical" &&
+            shouldSuppressNudge(config, advisorState, nudgeUrgency)
+
+        if (suppress) {
+            logger.debug(`[advisor] Suppressing ${nudgeUrgency} nudge (advisor active)`)
+        } else {
+            logger.info(`Inserting prune nudge message (urgency: ${nudgeUrgency})`)
+            nudgeString = "\n" + getNudgeString(config, nudgeUrgency)
+        }
     }
 
     const prunableToolsContent = prunableToolsList + nudgeString

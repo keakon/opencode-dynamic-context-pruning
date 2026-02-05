@@ -32,7 +32,9 @@ async function executePruneOperation(
     const { client, state, logger, config, workingDirectory } = ctx
     const sessionId = toolCtx.sessionID
 
-    logger.info(`${toolName} tool invoked with ${ids.length} IDs (listVersion=${state.prunableListVersion})`)
+    logger.info(
+        `${toolName} tool invoked with ${ids.length} IDs (listVersion=${state.prunableListVersion})`,
+    )
 
     // Use the snapshot of prunable tool IDs that was saved when <prunable-tools> was generated.
     // This prevents ID shifting issues when new messages arrive between list generation and execution.

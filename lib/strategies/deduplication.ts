@@ -38,12 +38,14 @@ export const deduplicate = (
         }
 
         // Skip protected tools
-        if (isToolCallProtected(
-            metadata.tool,
-            metadata.parameters,
-            protectedTools,
-            config.protectedFilePatterns,
-        )) {
+        if (
+            isToolCallProtected(
+                metadata.tool,
+                metadata.parameters,
+                protectedTools,
+                config.protectedFilePatterns,
+            )
+        ) {
             continue
         }
 

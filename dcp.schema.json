@@ -67,6 +67,28 @@
                 }
             }
         },
+        "tokenBudget": {
+            "type": "object",
+            "description": "Token budget thresholds for context management",
+            "additionalProperties": false,
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable token budget-based pruning triggers"
+                },
+                "warnThreshold": {
+                    "type": "number",
+                    "default": 60000,
+                    "description": "Token count threshold for warn-level nudge"
+                },
+                "criticalThreshold": {
+                    "type": "number",
+                    "default": 100000,
+                    "description": "Token count threshold for critical-level nudge"
+                }
+            }
+        },
         "protectedFilePatterns": {
             "type": "array",
             "items": {
@@ -265,6 +287,68 @@
                             "description": "Additional tool names to protect from stale output purging"
                         }
                     }
+                }
+            }
+        },
+        "smallModelAdvisor": {
+            "enabled": true,
+            "fallbackModels": ["openai/gpt-4o-mini", "anthropic/claude-3-haiku"],
+            "type": "object",
+            "description": "Small model advisor for intelligent pruning suggestions (uses OpenCode's small_model via temporary session)",
+            "additionalProperties": false,
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Enable the small model advisor"
+                },
+                "minPrunableCount": {
+                    "type": "number",
+                    "default": 5,
+                    "description": "Minimum number of prunable tools before triggering advisor"
+                },
+                "tokenThreshold": {
+                    "type": "number",
+                    "default": 40000,
+                    "description": "Token threshold to trigger advisor analysis (should be lower than tokenBudget.warnThreshold)"
+                },
+                "timeout": {
+                    "type": "number",
+                    "default": 10000,
+                    "description": "Maximum latency in milliseconds before aborting advisor request"
+                },
+                "contentPreviewLength": {
+                    "type": "number",
+                    "default": 200,
+                    "description": "Length of content preview sent to advisor for each tool output"
+                },
+                "maxToolsInPrompt": {
+                    "type": "number",
+                    "default": 30,
+                    "description": "Maximum number of tools to include in advisor prompt"
+                },
+                "sendContentPreview": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Whether to send content preview to advisor"
+                },
+                "fallbackModels": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "default": [],
+                    "description": "Fallback model list for retry on failure (model IDs for OpenCode small_model override)"
+                },
+                "suppressNudge": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Suppress normal/warn nudge when advisor is active"
+                },
+                "debug": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Enable debug logging for advisor"
                 }
             }
         }

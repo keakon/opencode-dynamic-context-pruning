@@ -8,11 +8,17 @@ import * as fs from "fs/promises"
 import { existsSync } from "fs"
 import { homedir } from "os"
 import { join } from "path"
-import type { SessionState, SessionStats } from "./types"
+import type { SessionState, SessionStats, AdvisorState } from "./types"
 import type { Logger } from "../logger"
+import { createAdvisorState } from "../advisor/types"
 
 export interface PersistedPrune {
     toolIds: string[]
+}
+
+export interface PersistedAdvisorState {
+    feedbackHistory: AdvisorState["feedbackHistory"]
+    protectedKeys: Array<[string, { until: number; rejectCount: number }]>
 }
 
 export interface PersistedSessionState {
@@ -20,6 +26,7 @@ export interface PersistedSessionState {
     prune: PersistedPrune
     stats: SessionStats
     aggressivePruneExhausted?: boolean
+    advisor?: PersistedAdvisorState
     lastUpdated: string
 }
 
@@ -54,6 +61,10 @@ export async function saveSessionState(
             },
             stats: sessionState.stats,
             aggressivePruneExhausted: sessionState.aggressivePruneExhausted,
+            advisor: {
+                feedbackHistory: sessionState.advisor.feedbackHistory,
+                protectedKeys: Array.from(sessionState.advisor.protectedKeyExpiry.entries()),
+            },
             lastUpdated: new Date().toISOString(),
         }
 

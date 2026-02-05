@@ -65,6 +65,28 @@ export interface TokenBudget {
     criticalThreshold: number
 }
 
+export interface SmallModelAdvisorConfig {
+    enabled: boolean
+    /** Minimum number of prunable tools before triggering advisor (default: 5) */
+    minPrunableCount: number
+    /** Token threshold to trigger advisor analysis (default: 40000, lower than warnThreshold) */
+    tokenThreshold: number
+    /** Maximum latency in milliseconds before aborting (default: 10000) */
+    timeout: number
+    /** Length of content preview sent to advisor (default: 200) */
+    contentPreviewLength: number
+    /** Maximum number of tools to include in advisor prompt (default: 30) */
+    maxToolsInPrompt: number
+    /** Whether to send content preview to advisor (default: true) */
+    sendContentPreview: boolean
+    /** Fallback model list for retry on failure (model IDs) */
+    fallbackModels: string[]
+    /** Suppress normal/warn nudge when advisor is active (default: true) */
+    suppressNudge: boolean
+    /** Enable debug logging for advisor (default: false) */
+    debug: boolean
+}
+
 export interface PluginConfig {
     enabled: boolean
     debug: boolean
@@ -80,6 +102,7 @@ export interface PluginConfig {
         purgeErrors: PurgeErrors
         purgeStaleOutputs: PurgeStaleOutputs
     }
+    smallModelAdvisor?: SmallModelAdvisorConfig
 }
 
 const DEFAULT_PROTECTED_TOOLS = [
@@ -151,6 +174,18 @@ export const VALID_CONFIG_KEYS = new Set([
     "strategies.purgeStaleOutputs.minPrunableCount",
     "strategies.purgeStaleOutputs.preserveRecent",
     "strategies.purgeStaleOutputs.protectedTools",
+    // smallModelAdvisor
+    "smallModelAdvisor",
+    "smallModelAdvisor.enabled",
+    "smallModelAdvisor.minPrunableCount",
+    "smallModelAdvisor.tokenThreshold",
+    "smallModelAdvisor.timeout",
+    "smallModelAdvisor.contentPreviewLength",
+    "smallModelAdvisor.maxToolsInPrompt",
+    "smallModelAdvisor.sendContentPreview",
+    "smallModelAdvisor.fallbackModels",
+    "smallModelAdvisor.suppressNudge",
+    "smallModelAdvisor.debug",
 ])
 
 // Extract all key paths from a config object for validation
@@ -212,6 +247,16 @@ const CONFIG_SCHEMA: Record<string, ValidatorType> = {
     "strategies.purgeStaleOutputs.minPrunableCount": "number",
     "strategies.purgeStaleOutputs.preserveRecent": "number",
     "strategies.purgeStaleOutputs.protectedTools": "string[]",
+    "smallModelAdvisor.enabled": "boolean",
+    "smallModelAdvisor.minPrunableCount": "number",
+    "smallModelAdvisor.tokenThreshold": "number",
+    "smallModelAdvisor.timeout": "number",
+    "smallModelAdvisor.contentPreviewLength": "number",
+    "smallModelAdvisor.maxToolsInPrompt": "number",
+    "smallModelAdvisor.sendContentPreview": "boolean",
+    "smallModelAdvisor.fallbackModels": "string[]",
+    "smallModelAdvisor.suppressNudge": "boolean",
+    "smallModelAdvisor.debug": "boolean",
 }
 
 function getNestedValue(obj: any, path: string): any {
@@ -374,6 +419,20 @@ const defaultConfig: PluginConfig = {
             preserveRecent: 3,
             protectedTools: [],
         },
+    },
+    // Small Model Advisor: disabled by default, user must explicitly enable
+    // Per docs 2.1: defaults for all settings when enabled
+    smallModelAdvisor: {
+        enabled: false,
+        minPrunableCount: 5,
+        tokenThreshold: 40000,
+        timeout: 10000,
+        contentPreviewLength: 200,
+        maxToolsInPrompt: 30,
+        sendContentPreview: true,
+        fallbackModels: [],
+        suppressNudge: true,
+        debug: false,
     },
 }
 
@@ -572,6 +631,40 @@ function mergeCommands(
     }
 }
 
+function mergeAdvisor(
+    base: SmallModelAdvisorConfig | undefined,
+    override?: Partial<SmallModelAdvisorConfig>,
+): SmallModelAdvisorConfig | undefined {
+    if (!override) return base
+    if (!base) {
+        // No base config, create from override with defaults
+        return {
+            enabled: override.enabled ?? false,
+            minPrunableCount: override.minPrunableCount ?? 5,
+            tokenThreshold: override.tokenThreshold ?? 40000,
+            timeout: override.timeout ?? 10000,
+            contentPreviewLength: override.contentPreviewLength ?? 200,
+            maxToolsInPrompt: override.maxToolsInPrompt ?? 30,
+            sendContentPreview: override.sendContentPreview ?? true,
+            fallbackModels: override.fallbackModels ?? [],
+            suppressNudge: override.suppressNudge ?? true,
+            debug: override.debug ?? false,
+        }
+    }
+    return {
+        enabled: val(override.enabled, base.enabled),
+        minPrunableCount: val(override.minPrunableCount, base.minPrunableCount),
+        tokenThreshold: val(override.tokenThreshold, base.tokenThreshold),
+        timeout: val(override.timeout, base.timeout),
+        contentPreviewLength: val(override.contentPreviewLength, base.contentPreviewLength),
+        maxToolsInPrompt: val(override.maxToolsInPrompt, base.maxToolsInPrompt),
+        sendContentPreview: val(override.sendContentPreview, base.sendContentPreview),
+        fallbackModels: override.fallbackModels ?? base.fallbackModels,
+        suppressNudge: val(override.suppressNudge, base.suppressNudge),
+        debug: val(override.debug, base.debug),
+    }
+}
+
 function mergeTokenBudget(
     base: PluginConfig["tokenBudget"],
     override?: Partial<PluginConfig["tokenBudget"]>,
@@ -619,6 +712,12 @@ function deepCloneConfig(config: PluginConfig): PluginConfig {
                 protectedTools: [...config.strategies.purgeStaleOutputs.protectedTools],
             },
         },
+        smallModelAdvisor: config.smallModelAdvisor
+            ? {
+                  ...config.smallModelAdvisor,
+                  fallbackModels: [...config.smallModelAdvisor.fallbackModels],
+              }
+            : undefined,
     }
 }
 
@@ -638,6 +737,7 @@ function mergeConfigOverride(config: PluginConfig, data: Record<string, any>): P
         ],
         tools: mergeTools(config.tools, data.tools as any),
         strategies: mergeStrategies(config.strategies, data.strategies as any),
+        smallModelAdvisor: mergeAdvisor(config.smallModelAdvisor, data.smallModelAdvisor as any),
     }
 }
 

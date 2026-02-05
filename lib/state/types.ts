@@ -1,4 +1,5 @@
 import { Message, Part } from "@opencode-ai/sdk/v2"
+import type { AdvisorState } from "../advisor/types"
 
 export interface WithParts {
     info: Message
@@ -50,4 +51,7 @@ export interface SessionState {
     prunableToolIdList: PrunableToolEntry[] | null // Snapshot with callId and tool name for validation
     prunableListVersion: number // Snapshot version for internal tracking
     aggressivePruneExhausted: boolean
+    advisor: AdvisorState
 }
+
+export type { AdvisorState }

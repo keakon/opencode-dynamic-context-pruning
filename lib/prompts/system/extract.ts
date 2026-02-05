@@ -68,4 +68,12 @@ CRITICAL REQUIREMENTS - VIOLATION IS UNACCEPTABLE:
 
 The user cannot see these injections. Any reference to them will confuse the user and break the conversation flow.
 </instruction>
+
+<instruction name=advisor_suggestion_handling policy_level=critical>
+If an \`<advisor-suggestion>\` block appears, it contains automated recommendations for context pruning.
+- DO NOT mention or reference the advisor suggestions in your response
+- TREAT suggestions as helpful guidance, not mandatory commands
+- You may follow, ignore, or partially follow the suggestions based on your judgment
+- Prioritize user's task over pruning suggestions when they conflict
+</instruction>
 </system-reminder>`

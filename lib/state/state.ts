@@ -2,6 +2,7 @@ import type { SessionState, ToolParameterEntry, WithParts } from "./types"
 import type { Logger } from "../logger"
 import { loadSessionState } from "./persistence"
 import { getLastUserMessage, isMessageCompacted } from "../shared-utils"
+import { createAdvisorState } from "../advisor/types"
 
 async function isSubAgentSession(client: any, sessionID: string): Promise<boolean> {
     try {
@@ -48,7 +49,24 @@ export const checkSession = async (
         state.toolTokensCacheHash = undefined
         state.prunableToolIdList = null
         state.prunableListVersion = 0
-        logger.info("Detected compaction from messages - cleared tool cache", {
+
+        // Clear advisor state on compaction (per spec)
+        state.advisor.pendingSuggestion = null
+        state.advisor.advisorInProgress = false
+
+        // Rebuild protectedKeyExpiry based on rejectCount after compaction (per docs 6.2)
+        // This ensures protection periods remain valid when turn numbers reset
+        const newTurn = countTurns(state, messages)
+        for (const [paramKey, info] of state.advisor.protectedKeyExpiry) {
+            // Rebuild protection: rejectCount * 3 turns from new turn
+            const newExpiry = newTurn + info.rejectCount * 3
+            state.advisor.protectedKeyExpiry.set(paramKey, {
+                until: newExpiry,
+                rejectCount: info.rejectCount,
+            })
+        }
+
+        logger.info("Detected compaction from messages - cleared tool cache and advisor state", {
             timestamp: lastCompactionTimestamp,
         })
     }
@@ -83,6 +101,7 @@ export function createSessionState(): SessionState {
         prunableToolIdList: null,
         prunableListVersion: 0,
         aggressivePruneExhausted: false,
+        advisor: createAdvisorState(),
     }
 }
 
@@ -106,6 +125,7 @@ export function resetSessionState(state: SessionState): void {
     state.prunableToolIdList = fresh.prunableToolIdList
     state.prunableListVersion = fresh.prunableListVersion
     state.aggressivePruneExhausted = fresh.aggressivePruneExhausted
+    state.advisor = createAdvisorState()
 }
 
 export async function ensureSessionInitialized(
@@ -148,6 +168,61 @@ export async function ensureSessionInitialized(
         currentPrunableTokens: 0, // Recalculated on each turn
     }
     state.aggressivePruneExhausted = persisted.aggressivePruneExhausted ?? false
+
+    // Load advisor state if persisted
+    if (persisted.advisor) {
+        const persistedAdvisor = persisted.advisor as any
+        const expiryMap = new Map<string, { until: number; rejectCount: number }>()
+        const protectedKeysRaw = persistedAdvisor.protectedKeys
+        if (Array.isArray(protectedKeysRaw)) {
+            if (protectedKeysRaw.length > 0 && Array.isArray(protectedKeysRaw[0])) {
+                for (const [key, info] of protectedKeysRaw as Array<
+                    [string, { until: number; rejectCount: number }]
+                >) {
+                    if (typeof key === "string" && info && typeof info === "object") {
+                        const until =
+                            typeof info.until === "number" ? info.until : state.currentTurn + 3
+                        const rejectCount =
+                            typeof info.rejectCount === "number" ? info.rejectCount : 1
+                        expiryMap.set(key, { until, rejectCount })
+                    }
+                }
+            } else {
+                for (const key of protectedKeysRaw as string[]) {
+                    if (typeof key === "string") {
+                        expiryMap.set(key, { until: state.currentTurn + 3, rejectCount: 1 })
+                    }
+                }
+            }
+        }
+
+        const legacyExpiry = persistedAdvisor.protectedKeyExpiry
+        if (legacyExpiry && typeof legacyExpiry === "object") {
+            for (const [key, value] of Object.entries(legacyExpiry)) {
+                if (typeof value === "number") {
+                    expiryMap.set(key, { until: value, rejectCount: 1 })
+                } else if (value && typeof value === "object") {
+                    const info = value as { until: number; rejectCount: number }
+                    expiryMap.set(key, {
+                        until: typeof info.until === "number" ? info.until : state.currentTurn + 3,
+                        rejectCount:
+                            typeof info.rejectCount === "number" ? info.rejectCount : 1,
+                    })
+                }
+            }
+        }
+
+        state.advisor = {
+            pendingSuggestion: null, // Not persisted, reset each session
+            feedbackHistory: persistedAdvisor.feedbackHistory ?? [],
+            protectedKeys: new Set(expiryMap.keys()),
+            protectedKeyExpiry: expiryMap,
+            consecutiveFailures: 0,
+            disabled: false,
+            currentModelIndex: 0, // Not persisted per spec, always reset
+            advisorInProgress: false, // Not persisted, reset each session
+        }
+    }
 }
 
 function findLastCompactionTimestamp(messages: WithParts[]): number {
