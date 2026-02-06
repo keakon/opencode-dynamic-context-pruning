@@ -90,6 +90,7 @@ IMPORTANT:
 - IDs must be strings (e.g., "1" not 1)
 - extractItems is an array of [id, summary] tuples
 - Keep summaries concise but informative (under 100 chars)
+- Reasoning: one short sentence (≤50 chars) and never empty
 - Prefer returning empty suggestions over risking removal of needed content`
 
 /**
