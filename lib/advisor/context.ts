@@ -66,7 +66,7 @@ export function buildAnalysisContext(
         if (entry.id > maxToolId) {
             maxToolId = entry.id
         }
-        const toolEntry = buildToolEntry(state, messages, i, entry, currentTurn, previewLength)
+        const toolEntry = buildToolEntry(state, messages, entry, currentTurn, previewLength)
         if (toolEntry) {
             // Apply turn protection: skip items younger than TURN_PROTECTION_AGE turns (per docs 6.3)
             const age = currentTurn - toolEntry.turn
@@ -114,7 +114,6 @@ export function buildAnalysisContext(
 function buildToolEntry(
     state: SessionState,
     messages: WithParts[],
-    index: number,
     entry: PrunableToolEntry,
     currentTurn: number,
     previewLength: number,
