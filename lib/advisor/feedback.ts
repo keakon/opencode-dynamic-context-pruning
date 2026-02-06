@@ -63,7 +63,7 @@ export function collectFeedbackAtTurnEnd(
     for (const suggestion of pending.suggestions) {
         // Get the paramKey and callId for this suggestion
         const paramKey = pending.idToParamKey.get(suggestion.id)
-        const callId = pending.idToCallId?.get(suggestion.id)
+        const callId = pending.idToCallId.get(suggestion.id)
         if (!paramKey || !callId) continue
 
         // Determine acceptance:

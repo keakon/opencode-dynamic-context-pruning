@@ -59,25 +59,27 @@ export const createSyntheticUserMessage = (
 export const extractParameterKey = (tool: string, parameters: any): string => {
     if (!parameters) return ""
 
-    if (tool === "read" && parameters.filePath) {
+    // Prefer camelCase filePath over snake_case file_path
+    const filePath = parameters.filePath ?? parameters.file_path
+    if (tool === "read" && filePath) {
         const offset = parameters.offset
         const limit = parameters.limit
         if (offset !== undefined && limit !== undefined) {
-            return `${parameters.filePath} (lines ${offset}-${offset + limit})`
+            return `${filePath} (lines ${offset}-${offset + limit})`
         }
         if (offset !== undefined) {
-            return `${parameters.filePath} (lines ${offset}+)`
+            return `${filePath} (lines ${offset}+)`
         }
         if (limit !== undefined) {
-            return `${parameters.filePath} (lines 0-${limit})`
+            return `${filePath} (lines 0-${limit})`
         }
-        return parameters.filePath
+        return filePath
     }
-    if (tool === "write" && parameters.filePath) {
-        return parameters.filePath
+    if (tool === "write" && filePath) {
+        return filePath
     }
-    if (tool === "edit" && parameters.filePath) {
-        return parameters.filePath
+    if (tool === "edit" && filePath) {
+        return filePath
     }
 
     if (tool === "list") {
@@ -174,7 +176,12 @@ export const extractParameterKey = (tool: string, parameters: any): string => {
 
 export function buildToolIdList(state: SessionState, messages: WithParts[]): string[] {
     const lastMsgId = messages.length > 0 ? messages[messages.length - 1].info.id : undefined
-    const msgHash = messages.length + "_" + lastMsgId + "_" + state.lastCompaction
+    const lastPartsLen =
+        messages.length > 0 && Array.isArray(messages[messages.length - 1].parts)
+            ? messages[messages.length - 1].parts.length
+            : 0
+    const msgHash =
+        messages.length + "_" + lastMsgId + "_" + lastPartsLen + "_" + state.lastCompaction
 
     if (state.toolIdListCacheHash === msgHash && state.toolIdListCache) {
         return state.toolIdListCache

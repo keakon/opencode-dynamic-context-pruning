@@ -36,7 +36,8 @@ MANDATORY ACTION TRIGGERS
 
 The "${PRUNABLE_TOOL_THRESHOLD}+ outputs" rule — you SHOULD act on it:
 - ${PRUNABLE_TOOL_THRESHOLD}+ outputs in \`<prunable-tools>\` list → SHOULD prune at least some before continuing
-- Nudge appears → MUST prune immediately
+- A \`<context-hint priority=critical>\` nudge → MUST prune before continuing
+- A \`<context-hint priority=high>\` nudge → SHOULD prune soon (unless it blocks the task)
 
 PRUNING DURING MULTI-FILE OPERATIONS
 

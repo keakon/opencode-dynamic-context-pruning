@@ -181,11 +181,8 @@ function injectAdvisorSuggestions(
         return
     }
 
-    // Build context for tool info lookup
-    const context = buildAnalysisContext(state, config, messages, advisorState)
-
     // Format the suggestion
-    const suggestionText = formatAdvisorSuggestion(pending, context)
+    const suggestionText = formatAdvisorSuggestion(pending)
     if (!suggestionText) {
         return
     }
@@ -352,10 +349,17 @@ export function createChatMessageTransformHandler(
         }
 
         // Insert prunable-tools context (possibly suppressed by advisor)
-        insertPruneToolContext(state, config, logger, output.messages, state.advisor)
+        const listInjected = insertPruneToolContext(
+            state,
+            config,
+            logger,
+            output.messages,
+            state.advisor,
+        )
 
-        // Inject pending advisor suggestions (if available and not consumed)
-        if (hasPendingSuggestion(state.advisor)) {
+        // Inject pending advisor suggestions only when prunable-tools list was injected,
+        // otherwise the model would see suggestion IDs without a list to resolve them
+        if (listInjected && hasPendingSuggestion(state.advisor)) {
             injectAdvisorSuggestions(state, config, output.messages, logger)
         }
 

@@ -6,7 +6,7 @@
  * Suggestions are formatted as actionable guidance for the main model.
  */
 
-import type { PendingSuggestion, AnalysisContext, PruneSuggestion } from "./types"
+import type { PendingSuggestion } from "./types"
 
 /**
  * Format advisor suggestions for injection into the context.
@@ -15,13 +15,9 @@ import type { PendingSuggestion, AnalysisContext, PruneSuggestion } from "./type
  * Should be injected BEFORE <prunable-tools> in the message.
  *
  * @param pendingSuggestion - The pending suggestion to inject
- * @param context - Analysis context for tool info resolution
  * @returns Formatted suggestion text to inject
  */
-export function formatAdvisorSuggestion(
-    pendingSuggestion: PendingSuggestion,
-    context: AnalysisContext,
-): string {
+export function formatAdvisorSuggestion(pendingSuggestion: PendingSuggestion): string {
     const suggestions = pendingSuggestion.suggestions
     if (suggestions.length === 0) {
         return ""
@@ -44,10 +40,8 @@ export function formatAdvisorSuggestion(
     // Compact format: Extract: [id → "summary", ...] (per docs 7.1)
     if (extracts.length > 0) {
         const items = extracts.map((s) => {
-            const summary = s.summary ?? ""
-            // Per docs 7.1: max 50 chars with "..." suffix if truncated
-            const shortSummary = summary.length > 50 ? summary.slice(0, 50) + "..." : summary
-            return `${s.id} → "${shortSummary}"`
+            const summary = (s.summary ?? "").replace(/"/g, '\\"').replace(/\s+/g, " ").trim()
+            return `${s.id} → "${summary}"`
         })
         lines.push(`Extract: [${items.join(", ")}]`)
     }
@@ -62,18 +56,4 @@ export function formatAdvisorSuggestion(
     lines.push("</advisor-suggestion>")
 
     return lines.join("\n")
-}
-
-/**
- * Build a minimal suggestion summary for logging/debug.
- */
-export function buildSuggestionSummary(suggestions: PruneSuggestion[]): string {
-    const discardCount = suggestions.filter((s) => s.action === "discard").length
-    const extractCount = suggestions.filter((s) => s.action === "extract").length
-
-    const parts: string[] = []
-    if (discardCount > 0) parts.push(`${discardCount} discard`)
-    if (extractCount > 0) parts.push(`${extractCount} extract`)
-
-    return `Advisor suggests: ${parts.join(", ")}`
 }

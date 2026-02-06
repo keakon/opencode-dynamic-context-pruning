@@ -188,8 +188,7 @@ export async function ensureSessionInitialized(
             }
         }
     }
-    let nextPrunableId =
-        typeof persisted.nextPrunableId === "number" ? persisted.nextPrunableId : 0
+    let nextPrunableId = typeof persisted.nextPrunableId === "number" ? persisted.nextPrunableId : 0
     if (prunableIdMap.size > 0) {
         let maxId = -1
         for (const value of prunableIdMap.values()) {

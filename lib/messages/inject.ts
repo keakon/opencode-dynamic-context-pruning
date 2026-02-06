@@ -10,7 +10,7 @@ import { getLastUserMessage } from "../shared-utils"
 import { truncate } from "../ui/utils"
 import { getToolTokens } from "../strategies/utils"
 import type { AdvisorState } from "../advisor/types"
-import { shouldSuppressNudge } from "../advisor/trigger"
+import { shouldSuppressNudge, hasSuggestionToInject } from "../advisor/trigger"
 
 type NudgeUrgency = "none" | "normal" | "warn" | "critical"
 
@@ -138,7 +138,7 @@ const getNudgeUrgency = (
 }
 
 const wrapPrunableTools = (content: string): string => `<prunable-tools>
-The following tools are available for pruning. Only IDs listed here are valid.
+Only these IDs are valid:
 ${content}
 </prunable-tools>`
 
@@ -254,9 +254,9 @@ export const insertPruneToolContext = (
     logger: Logger,
     messages: WithParts[],
     advisorState?: AdvisorState,
-): void => {
+): boolean => {
     if (!config.tools.prune.enabled) {
-        return
+        return false
     }
 
     // Clean historical prunable-tools injections to maintain stable message content
@@ -265,7 +265,7 @@ export const insertPruneToolContext = (
 
     const prunableToolsList = buildPrunableToolsList(state, config, logger, messages)
     if (!prunableToolsList) {
-        return
+        return false
     }
 
     const prunableToolCount = state.prunableToolIdList?.length ?? 0
@@ -273,12 +273,18 @@ export const insertPruneToolContext = (
 
     // On-demand injection: skip when no nudge is triggered
     // on_warn mode: skip unless warn or critical (more cache-friendly)
+    // Exception: always inject when advisor has pending suggestions, so the model can see the IDs
     const injectMode = config.tools.settings.injectPrunableTools ?? "on_demand"
-    if (injectMode === "on_demand" && nudgeUrgency === "none") {
-        return
+    const advisorNeedsList = advisorState ? hasSuggestionToInject(advisorState) : false
+    if (injectMode === "on_demand" && nudgeUrgency === "none" && !advisorNeedsList) {
+        return false
     }
-    if (injectMode === "on_warn" && (nudgeUrgency === "none" || nudgeUrgency === "normal")) {
-        return
+    if (
+        injectMode === "on_warn" &&
+        (nudgeUrgency === "none" || nudgeUrgency === "normal") &&
+        !advisorNeedsList
+    ) {
+        return false
     }
 
     logger.debug("prunable-tools: \n" + prunableToolsList)
@@ -303,7 +309,7 @@ export const insertPruneToolContext = (
 
     const lastUserMessage = getLastUserMessage(messages)
     if (!lastUserMessage) {
-        return
+        return false
     }
 
     const variant = state.variant ?? (lastUserMessage.info as UserMessage).variant
@@ -313,4 +319,5 @@ export const insertPruneToolContext = (
     // - Semantically, pruning hints are suggestions, not model self-knowledge
     // - User messages allow the model to make autonomous decisions
     messages.push(createSyntheticUserMessage(lastUserMessage, prunableToolsContent, variant))
+    return true
 }
