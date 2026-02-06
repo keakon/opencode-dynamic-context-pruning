@@ -9,11 +9,7 @@ export interface Deduplication {
     protectedTools: string[]
 }
 
-export interface DiscardTool {
-    enabled: boolean
-}
-
-export interface ExtractTool {
+export interface PruneTool {
     enabled: boolean
     showDistillation: boolean
 }
@@ -27,8 +23,7 @@ export interface ToolSettings {
 
 export interface Tools {
     settings: ToolSettings
-    discard: DiscardTool
-    extract: ExtractTool
+    prune: PruneTool
 }
 
 export interface Commands {
@@ -109,8 +104,7 @@ const DEFAULT_PROTECTED_TOOLS = [
     "task",
     "todowrite",
     "todoread",
-    "discard",
-    "extract",
+    "prune",
     "batch",
     "write",
     "edit",
@@ -149,11 +143,9 @@ export const VALID_CONFIG_KEYS = new Set([
     "tools.settings.nudgeFrequency",
     "tools.settings.protectedTools",
     "tools.settings.injectPrunableTools",
-    "tools.discard",
-    "tools.discard.enabled",
-    "tools.extract",
-    "tools.extract.enabled",
-    "tools.extract.showDistillation",
+    "tools.prune",
+    "tools.prune.enabled",
+    "tools.prune.showDistillation",
     "strategies",
     // strategies.deduplication
     "strategies.deduplication",
@@ -233,9 +225,8 @@ const CONFIG_SCHEMA: Record<string, ValidatorType> = {
     "tools.settings.nudgeFrequency": "number",
     "tools.settings.protectedTools": "string[]",
     "tools.settings.injectPrunableTools": ["always", "on_demand", "on_warn"],
-    "tools.discard.enabled": "boolean",
-    "tools.extract.enabled": "boolean",
-    "tools.extract.showDistillation": "boolean",
+    "tools.prune.enabled": "boolean",
+    "tools.prune.showDistillation": "boolean",
     "strategies.deduplication.enabled": "boolean",
     "strategies.deduplication.protectedTools": "string[]",
     "strategies.supersedeWrites.enabled": "boolean",
@@ -391,10 +382,7 @@ const defaultConfig: PluginConfig = {
             protectedTools: [...DEFAULT_PROTECTED_TOOLS],
             injectPrunableTools: "on_demand",
         },
-        discard: {
-            enabled: true,
-        },
-        extract: {
+        prune: {
             enabled: true,
             showDistillation: false,
         },
@@ -607,15 +595,9 @@ function mergeTools(
                 base.settings.injectPrunableTools,
             ),
         },
-        discard: {
-            enabled: val(override.discard?.enabled, base.discard.enabled),
-        },
-        extract: {
-            enabled: val(override.extract?.enabled, base.extract.enabled),
-            showDistillation: val(
-                override.extract?.showDistillation,
-                base.extract.showDistillation,
-            ),
+        prune: {
+            enabled: val(override.prune?.enabled, base.prune.enabled),
+            showDistillation: val(override.prune?.showDistillation, base.prune.showDistillation),
         },
     }
 }
@@ -692,8 +674,7 @@ function deepCloneConfig(config: PluginConfig): PluginConfig {
                 ...config.tools.settings,
                 protectedTools: [...config.tools.settings.protectedTools],
             },
-            discard: { ...config.tools.discard },
-            extract: { ...config.tools.extract },
+            prune: { ...config.tools.prune },
         },
         strategies: {
             deduplication: {

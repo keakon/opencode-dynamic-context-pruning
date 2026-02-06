@@ -318,13 +318,17 @@ batch, write, edit, plan_enter, plan_exit
 
 #### 提示消息 (Nudge)
 
-三个紧急级别，语气逐渐强硬：
+三个紧急级别，语气逐渐增强但始终尊重模型自主决策：
 
-| 级别     | 触发条件                                          | 语气                                     | 是否注入列表 (on_demand 模式) |
-| -------- | ------------------------------------------------- | ---------------------------------------- | ----------------------------- |
-| normal   | N+ 工具（N = PRUNABLE_TOOL_THRESHOLD）或 频率触发 | SHOULD prune                             | ✅ 注入                       |
-| warn     | >= 60k tokens (warnThreshold)                     | WARNING... SHOULD prune immediately      | ✅ 注入                       |
-| critical | >= 100k tokens (criticalThreshold)                | CRITICAL... MUST prune NOW, 强制要求裁剪 | ✅ 注入                       |
+| 级别     | 触发条件                                          | 语气                                  | 是否注入列表 (on_demand 模式) |
+| -------- | ------------------------------------------------- | ------------------------------------- | ----------------------------- |
+| normal   | N+ 工具（N = PRUNABLE_TOOL_THRESHOLD）或 频率触发 | 可选建议，模型自行判断                | ✅ 注入                       |
+| warn     | >= 60k tokens (warnThreshold)                     | 推荐裁剪，但优先当前任务              | ✅ 注入                       |
+| critical | >= 100k tokens (criticalThreshold)                | 强烈建议裁剪，提示性能影响            | ✅ 注入                       |
+
+**注入方式**：所有裁剪提示均以 user 消息注入（而非 assistant prefill），确保：
+- 模型将其视为建议而非自身知识，可自主决定是否采纳
+- 兼容所有模型（opus-4-6 不支持 assistant prefill）
 
 **设计理念**：系统不自动强制裁剪（自动策略除外），裁剪决策权在 AI：
 
@@ -1210,6 +1214,5 @@ insertPruneToolContext()
         │           ▼
         │    生成 nudgeString
         │
-        └──► 注入到 messages
-             （根据模型类型选择注入方式）
+        └──► 注入到 messages（始终注入为 user 消息）
 ```

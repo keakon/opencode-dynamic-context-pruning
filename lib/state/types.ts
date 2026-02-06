@@ -28,6 +28,7 @@ export interface Prune {
 }
 
 export interface PrunableToolEntry {
+    id: number
     callId: string
     tool: string
 }
@@ -50,6 +51,8 @@ export interface SessionState {
     toolTokensCacheHash: string | undefined // Hash for invalidation (msgLength_lastMsgId_lastCompaction)
     prunableToolIdList: PrunableToolEntry[] | null // Snapshot with callId and tool name for validation
     prunableListVersion: number // Snapshot version for internal tracking
+    nextPrunableId: number // Auto-increment counter for stable prunable IDs
+    prunableIdMap: Map<string, number>
     aggressivePruneExhausted: boolean
     advisor: AdvisorState
 }

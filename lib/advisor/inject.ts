@@ -57,7 +57,7 @@ export function formatAdvisorSuggestion(
     }
 
     // Hint for accepting suggestions (per docs 7.1)
-    lines.push("Use discard/extract tools to accept suggestions.")
+    lines.push("Use the prune tool to accept suggestions.")
 
     lines.push("</advisor-suggestion>")
 

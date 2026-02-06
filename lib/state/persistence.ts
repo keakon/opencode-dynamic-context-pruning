@@ -10,7 +10,6 @@ import { homedir } from "os"
 import { join } from "path"
 import type { SessionState, SessionStats, AdvisorState } from "./types"
 import type { Logger } from "../logger"
-import { createAdvisorState } from "../advisor/types"
 
 export interface PersistedPrune {
     toolIds: string[]
@@ -27,6 +26,9 @@ export interface PersistedSessionState {
     stats: SessionStats
     aggressivePruneExhausted?: boolean
     advisor?: PersistedAdvisorState
+    prunableIdMap?: Array<[string, number]>
+    nextPrunableId?: number
+    compressSummaries?: Array<[string, string]>
     lastUpdated: string
 }
 
@@ -65,6 +67,8 @@ export async function saveSessionState(
                 feedbackHistory: sessionState.advisor.feedbackHistory,
                 protectedKeys: Array.from(sessionState.advisor.protectedKeyExpiry.entries()),
             },
+            prunableIdMap: Array.from(sessionState.prunableIdMap.entries()),
+            nextPrunableId: sessionState.nextPrunableId,
             lastUpdated: new Date().toISOString(),
         }
 
@@ -103,6 +107,21 @@ export async function loadSessionState(
                 sessionId: sessionId,
             })
             return null
+        }
+
+        if (state.prunableIdMap && !Array.isArray(state.prunableIdMap)) {
+            state.prunableIdMap = undefined
+        }
+        if (state.compressSummaries && !Array.isArray(state.compressSummaries)) {
+            state.compressSummaries = undefined
+        } else if (Array.isArray(state.compressSummaries)) {
+            state.compressSummaries = state.compressSummaries.filter(
+                (e) =>
+                    Array.isArray(e) &&
+                    e.length === 2 &&
+                    typeof e[0] === "string" &&
+                    typeof e[1] === "string",
+            )
         }
 
         logger.info("Loaded session state from disk", {

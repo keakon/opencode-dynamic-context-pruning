@@ -281,21 +281,11 @@ export function createSystemPromptHandler(
             return
         }
 
-        const discardEnabled = config.tools.discard.enabled
-        const extractEnabled = config.tools.extract.enabled
-
-        let promptName: string
-        if (discardEnabled && extractEnabled) {
-            promptName = "system/system-prompt-both"
-        } else if (discardEnabled) {
-            promptName = "system/system-prompt-discard"
-        } else if (extractEnabled) {
-            promptName = "system/system-prompt-extract"
-        } else {
+        if (!config.tools.prune.enabled) {
             return
         }
 
-        const syntheticPrompt = loadPrompt(promptName)
+        const syntheticPrompt = loadPrompt("system/system-prompt-both")
         output.system.push(syntheticPrompt)
     }
 }

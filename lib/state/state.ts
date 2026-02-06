@@ -49,6 +49,8 @@ export const checkSession = async (
         state.toolTokensCacheHash = undefined
         state.prunableToolIdList = null
         state.prunableListVersion = 0
+        state.nextPrunableId = 0
+        state.prunableIdMap = new Map()
 
         // Clear advisor state on compaction (per spec)
         state.advisor.pendingSuggestion = null
@@ -100,6 +102,8 @@ export function createSessionState(): SessionState {
         toolTokensCacheHash: undefined,
         prunableToolIdList: null,
         prunableListVersion: 0,
+        nextPrunableId: 0,
+        prunableIdMap: new Map(),
         aggressivePruneExhausted: false,
         advisor: createAdvisorState(),
     }
@@ -124,6 +128,8 @@ export function resetSessionState(state: SessionState): void {
     state.toolTokensCacheHash = fresh.toolTokensCacheHash
     state.prunableToolIdList = fresh.prunableToolIdList
     state.prunableListVersion = fresh.prunableListVersion
+    state.nextPrunableId = fresh.nextPrunableId
+    state.prunableIdMap = fresh.prunableIdMap
     state.aggressivePruneExhausted = fresh.aggressivePruneExhausted
     state.advisor = createAdvisorState()
 }
@@ -169,6 +175,35 @@ export async function ensureSessionInitialized(
     }
     state.aggressivePruneExhausted = persisted.aggressivePruneExhausted ?? false
 
+    const prunableIdMap = new Map<string, number>()
+    if (Array.isArray(persisted.prunableIdMap)) {
+        for (const entry of persisted.prunableIdMap) {
+            if (
+                Array.isArray(entry) &&
+                entry.length === 2 &&
+                typeof entry[0] === "string" &&
+                typeof entry[1] === "number"
+            ) {
+                prunableIdMap.set(entry[0], entry[1])
+            }
+        }
+    }
+    let nextPrunableId =
+        typeof persisted.nextPrunableId === "number" ? persisted.nextPrunableId : 0
+    if (prunableIdMap.size > 0) {
+        let maxId = -1
+        for (const value of prunableIdMap.values()) {
+            if (value > maxId) {
+                maxId = value
+            }
+        }
+        if (nextPrunableId <= maxId) {
+            nextPrunableId = maxId + 1
+        }
+    }
+    state.prunableIdMap = prunableIdMap
+    state.nextPrunableId = nextPrunableId
+
     // Load advisor state if persisted
     if (persisted.advisor) {
         const persistedAdvisor = persisted.advisor as any
@@ -205,8 +240,7 @@ export async function ensureSessionInitialized(
                     const info = value as { until: number; rejectCount: number }
                     expiryMap.set(key, {
                         until: typeof info.until === "number" ? info.until : state.currentTurn + 3,
-                        rejectCount:
-                            typeof info.rejectCount === "number" ? info.rejectCount : 1,
+                        rejectCount: typeof info.rejectCount === "number" ? info.rejectCount : 1,
                     })
                 }
             }

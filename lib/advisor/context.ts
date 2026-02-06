@@ -59,9 +59,13 @@ export function buildAnalysisContext(
     // Build tool entries
     const tools: AnalysisToolEntry[] = []
     const prunableList = state.prunableToolIdList ?? []
+    let maxToolId = 0
 
     for (let i = 0; i < prunableList.length; i++) {
         const entry = prunableList[i]
+        if (entry.id > maxToolId) {
+            maxToolId = entry.id
+        }
         const toolEntry = buildToolEntry(state, messages, i, entry, currentTurn, previewLength)
         if (toolEntry) {
             // Apply turn protection: skip items younger than TURN_PROTECTION_AGE turns (per docs 6.3)
@@ -100,7 +104,7 @@ export function buildAnalysisContext(
         feedbackSummary,
         conversationSummary,
         recentAssistantActivity,
-        maxToolId: prunableList.length - 1,
+        maxToolId,
     }
 }
 
@@ -139,7 +143,7 @@ function buildToolEntry(
     const priorityScore = tokens * age
 
     return {
-        id: String(index),
+        id: String(entry.id),
         tool: entry.tool,
         paramKey: `${entry.tool}:${paramKey}`,
         callId: entry.callId,

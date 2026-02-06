@@ -5,10 +5,13 @@ export const SYSTEM_PROMPT_BOTH = `<system-reminder>
 
 ENVIRONMENT
 Context is limited. The environment may inject a \`<prunable-tools>\` list when pruning is needed (via \`context_info\`; not callable). Only those IDs are valid.
+If no \`<prunable-tools>\` list is present, do NOT call any pruning tools.
 
-TWO TOOLS FOR CONTEXT MANAGEMENT
-- \`discard\`: Remove tool outputs completely. Use for noise, errors, outdated info.
-- \`extract\`: Distill key findings before removing. Use when information has future value.
+PRUNE TOOL
+\`prune\`: Manage context by discarding or extracting tool outputs.
+- \`discard\` parameter: Remove tool outputs completely. Use for noise, errors, outdated info.
+- \`extract\` parameter: Distill key findings before removing. Use when information has future value.
+Both parameters can be used in a single call.
 
 DEFAULT BEHAVIOR: PRUNE. Keeping is the exception, not the rule.
 

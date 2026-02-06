@@ -4,15 +4,7 @@ import type { PluginConfig } from "../config"
 import { PRUNABLE_TOOL_THRESHOLD } from "../config"
 import type { UserMessage } from "@opencode-ai/sdk/v2"
 import { getNudgePrompt } from "../prompts/nudge"
-import {
-    extractParameterKey,
-    buildToolIdList,
-    createSyntheticAssistantMessage,
-    createSyntheticUserMessage,
-    createSyntheticToolPart,
-    isDeepSeekOrKimi,
-    isIgnoredUserMessage,
-} from "./utils"
+import { extractParameterKey, buildToolIdList, createSyntheticUserMessage } from "./utils"
 import { isToolCallProtected } from "../protected-file-patterns"
 import { getLastUserMessage } from "../shared-utils"
 import { truncate } from "../ui/utils"
@@ -79,21 +71,11 @@ const getNudgeString = (config: PluginConfig, urgency: NudgeUrgency): string => 
         return ""
     }
 
-    const discardEnabled = config.tools.discard.enabled
-    const extractEnabled = config.tools.extract.enabled
-
-    let mode: "both" | "discard" | "extract"
-    if (discardEnabled && extractEnabled) {
-        mode = "both"
-    } else if (discardEnabled) {
-        mode = "discard"
-    } else if (extractEnabled) {
-        mode = "extract"
-    } else {
+    if (!config.tools.prune.enabled) {
         return ""
     }
 
-    return getNudgePrompt(mode, urgency)
+    return getNudgePrompt(urgency)
 }
 
 /**
@@ -231,18 +213,32 @@ const buildPrunableToolsList = (
     // Increment snapshot version for internal tracking and debugging.
     state.prunableListVersion++
 
-    // Save snapshot with both callId and tool name for validation.
+    // Save snapshot with callId, tool name, and auto-increment ID for validation.
     // This allows detecting ID drift when the list changes between generation and execution.
-    state.prunableToolIdList = prunableEntries.map((e) => ({
-        callId: e.id,
-        tool: e.tool,
-    }))
+    const currentCallIds = new Set<string>()
+    state.prunableToolIdList = prunableEntries.map((e) => {
+        currentCallIds.add(e.id)
+        const existing = state.prunableIdMap.get(e.id)
+        const id = existing === undefined ? state.nextPrunableId++ : existing
+        if (existing === undefined) {
+            state.prunableIdMap.set(e.id, id)
+        }
+        return {
+            id,
+            callId: e.id,
+            tool: e.tool,
+        }
+    })
+    for (const key of state.prunableIdMap.keys()) {
+        if (!currentCallIds.has(key)) {
+            state.prunableIdMap.delete(key)
+        }
+    }
 
-    const lines: string[] = prunableEntries.map((entry, i) => {
-        const description = entry.paramKey
-            ? `${entry.tool}, ${truncate(entry.paramKey, 50)}`
-            : entry.tool
-        return `${i}: ${description}`
+    const lines: string[] = state.prunableToolIdList.map((entry, i) => {
+        const paramKey = prunableEntries[i].paramKey
+        const description = paramKey ? `${entry.tool}, ${truncate(paramKey, 50)}` : entry.tool
+        return `${entry.id}: ${description}`
     })
 
     logger.debug(
@@ -259,7 +255,7 @@ export const insertPruneToolContext = (
     messages: WithParts[],
     advisorState?: AdvisorState,
 ): void => {
-    if (!config.tools.discard.enabled && !config.tools.extract.enabled) {
+    if (!config.tools.prune.enabled) {
         return
     }
 
@@ -310,31 +306,11 @@ export const insertPruneToolContext = (
         return
     }
 
-    const userInfo = lastUserMessage.info as UserMessage
-    const variant = state.variant ?? userInfo.variant
+    const variant = state.variant ?? (lastUserMessage.info as UserMessage).variant
 
-    let lastNonIgnoredMessage: WithParts | undefined
-    for (let i = messages.length - 1; i >= 0; i--) {
-        const msg = messages[i]
-        if (!(msg.info.role === "user" && isIgnoredUserMessage(msg))) {
-            lastNonIgnoredMessage = msg
-            break
-        }
-    }
-
-    if (!lastNonIgnoredMessage || lastNonIgnoredMessage.info.role === "user") {
-        messages.push(createSyntheticUserMessage(lastUserMessage, prunableToolsContent, variant))
-    } else {
-        const providerID = userInfo.model?.providerID || ""
-        const modelID = userInfo.model?.modelID || ""
-
-        if (isDeepSeekOrKimi(providerID, modelID)) {
-            const toolPart = createSyntheticToolPart(lastNonIgnoredMessage, prunableToolsContent)
-            lastNonIgnoredMessage.parts.push(toolPart)
-        } else {
-            messages.push(
-                createSyntheticAssistantMessage(lastUserMessage, prunableToolsContent, variant),
-            )
-        }
-    }
+    // Always inject as user message instead of assistant prefill.
+    // - opus-4-6 does not support assistant prefill (last message must be user role)
+    // - Semantically, pruning hints are suggestions, not model self-knowledge
+    // - User messages allow the model to make autonomous decisions
+    messages.push(createSyntheticUserMessage(lastUserMessage, prunableToolsContent, variant))
 }
