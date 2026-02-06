@@ -4,7 +4,6 @@ import type { UserMessage } from "@opencode-ai/sdk/v2"
 
 const SYNTHETIC_MESSAGE_ID = "msg_01234567890123456789012345"
 const SYNTHETIC_PART_ID = "prt_01234567890123456789012345"
-const SYNTHETIC_CALL_ID = "call_01234567890123456789012345"
 
 /**
  * Compute a lightweight hash of tool part states in the last message.
@@ -22,17 +21,6 @@ export function computeLastMsgToolStateHash(messages: WithParts[]): string {
         }
     }
     return toolStates.join(",")
-}
-
-export const isDeepSeekOrKimi = (providerID: string, modelID: string): boolean => {
-    const lowerProviderID = providerID.toLowerCase()
-    const lowerModelID = modelID.toLowerCase()
-    return (
-        lowerProviderID.includes("deepseek") ||
-        lowerProviderID.includes("kimi") ||
-        lowerModelID.includes("deepseek") ||
-        lowerModelID.includes("kimi")
-    )
 }
 
 export const createSyntheticUserMessage = (
@@ -62,67 +50,6 @@ export const createSyntheticUserMessage = (
                 text: content,
             },
         ],
-    }
-}
-
-export const createSyntheticAssistantMessage = (
-    baseMessage: WithParts,
-    content: string,
-    variant?: string,
-): WithParts => {
-    const userInfo = baseMessage.info as UserMessage
-    const now = Date.now()
-
-    return {
-        info: {
-            id: SYNTHETIC_MESSAGE_ID,
-            sessionID: userInfo.sessionID,
-            role: "assistant" as const,
-            agent: userInfo.agent || "code",
-            parentID: userInfo.id,
-            modelID: userInfo.model.modelID,
-            providerID: userInfo.model.providerID,
-            mode: "default",
-            path: {
-                cwd: "/",
-                root: "/",
-            },
-            time: { created: now, completed: now },
-            cost: 0,
-            tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
-            ...(variant !== undefined && { variant }),
-        },
-        parts: [
-            {
-                id: SYNTHETIC_PART_ID,
-                sessionID: userInfo.sessionID,
-                messageID: SYNTHETIC_MESSAGE_ID,
-                type: "text",
-                text: content,
-            },
-        ],
-    }
-}
-
-export const createSyntheticToolPart = (baseMessage: WithParts, content: string) => {
-    const userInfo = baseMessage.info as UserMessage
-    const now = Date.now()
-
-    return {
-        id: SYNTHETIC_PART_ID,
-        sessionID: userInfo.sessionID,
-        messageID: baseMessage.info.id,
-        type: "tool" as const,
-        callID: SYNTHETIC_CALL_ID,
-        tool: "context_info",
-        state: {
-            status: "completed" as const,
-            input: {},
-            output: content,
-            title: "Context Info",
-            metadata: {},
-            time: { start: now, end: now },
-        },
     }
 }
 

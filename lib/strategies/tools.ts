@@ -59,17 +59,19 @@ async function executePruneOperation(
         }
     }
 
+    const discardNums = discardIds.map((id) => Number(id))
+    const extractNums = extractItems.map(([id]) => Number(id))
+
     // Check for duplicate IDs within extract (distillation is positional, duplicates lose data)
-    const extractIds = extractItems.map(([id]) => id)
-    if (new Set(extractIds).size !== extractIds.length) {
+    if (new Set(extractNums).size !== extractNums.length) {
         throw new Error(
             "Duplicate IDs detected in extract. Each ID must be unique when using distillation.",
         )
     }
 
     // Check for overlap between discard and extract
-    const discardIdSet = new Set(discardIds)
-    const extractIdSet = new Set(extractIds)
+    const discardIdSet = new Set(discardNums)
+    const extractIdSet = new Set(extractNums)
     const overlap = [...discardIdSet].filter((id) => extractIdSet.has(id))
     if (overlap.length > 0) {
         throw new Error(
@@ -78,8 +80,7 @@ async function executePruneOperation(
     }
 
     // Deduplicate discard IDs; extract already validated unique
-    const dedupedDiscardNums = [...new Set(discardIds.map(Number))]
-    const extractNums = extractIds.map(Number)
+    const dedupedDiscardNums = [...new Set(discardNums)]
 
     // Build extraction map: numericId -> distillation text
     const extractionMap = new Map<number, string>()
