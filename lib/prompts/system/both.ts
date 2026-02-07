@@ -4,7 +4,7 @@ export const SYSTEM_PROMPT_BOTH = `<system-reminder>
 <instruction name=context_management_protocol policy_level=critical>
 
 ENVIRONMENT
-Context is limited. The environment may inject a \`<prunable-tools>\` list when pruning is needed (via \`context_info\`; not callable). Only those IDs are valid.
+Context is limited. The environment may inject versioned \`<prunable-tools>\` blocks. Multiple blocks may exist in history — always use IDs from the **latest** block (highest \`version\` attribute). Ignore all older blocks.
 If no \`<prunable-tools>\` list is present, do NOT call any pruning tools.
 
 PRUNE TOOL
@@ -32,6 +32,27 @@ KEEP ONLY WHEN (both conditions must be true):
 
 If either condition is false → prune (discard or extract).
 
+COST-AWARE PRUNING
+Cache creation costs 12.5x more than cache read. Before pruning, consider:
+
+When to prune:
+- Critical threshold reached (120k+)
+- Accumulated 20+ prunable items or 30k+ estimated tokens
+- Context noise is degrading response quality
+
+When NOT to prune:
+- Savings < 30k tokens (cache rebuild cost exceeds savings)
+- Just for "cleanliness" — noise is cheaper than cache rebuild
+
+Discard vs Extract:
+- Discard for static, re-obtainable info (files, command output, confirmations)
+- Extract only for hard-to-reproduce info (runtime errors, user-provided data)
+- Extract adds output tokens — use sparingly
+
+Batch operations:
+- Minimum batch: 20 items or 30k tokens
+- One prune of 20 items >> twenty prunes of 1 item
+
 MANDATORY ACTION TRIGGERS
 
 The "${PRUNABLE_TOOL_THRESHOLD}+ outputs" rule — you SHOULD act on it:
@@ -58,7 +79,7 @@ Key principle:
 - "Already synthesized into response" → discard (or extract if insights worth preserving)
 
 NOTES
-Only prune IDs shown in \`<prunable-tools>\`.
+Only prune IDs from the latest \`<prunable-tools>\` block.
 "Might be useful later" is NOT a valid reason to keep. Extract instead.
 ⚠️ FAILURE TO PRUNE → context bloat → degraded performance.
 

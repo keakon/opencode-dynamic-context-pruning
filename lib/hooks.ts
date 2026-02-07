@@ -7,6 +7,7 @@ import {
     supersedeWrites,
     purgeErrors,
     purgeStaleOutputs,
+    compressConfirmations,
     aggressivePrune,
 } from "./strategies"
 import { prune, insertPruneToolContext } from "./messages"
@@ -198,8 +199,8 @@ function injectAdvisorSuggestions(
             if (part.type === "text") {
                 const textPart = part as any
                 if (typeof textPart.text === "string") {
-                    // Inject BEFORE the prunable-tools list if present
-                    const prunableIndex = textPart.text.indexOf("<prunable-tools>")
+                    // Inject BEFORE the prunable-tools list if present (supports versioned blocks)
+                    const prunableIndex = textPart.text.search(/<prunable-tools[\s>]/)
                     if (prunableIndex !== -1) {
                         textPart.text =
                             textPart.text.slice(0, prunableIndex) +
@@ -404,11 +405,16 @@ export function createChatMessageTransformHandler(
             state.toolTokensCacheHash = tokenCacheHash
         }
 
+        // Reset earliest modified message index for this request cycle.
+        // Used by insertPruneToolContext to selectively clean stale <prunable-tools> blocks.
+        state.earliestModifiedMsgIndex = -1
+
         // Run automatic pruning strategies
         deduplicate(state, logger, config, output.messages)
         supersedeWrites(state, logger, config, output.messages)
         purgeErrors(state, logger, config, output.messages)
         purgeStaleOutputs(state, logger, config, output.messages)
+        compressConfirmations(state, logger, config, output.messages)
         aggressivePrune(state, logger, config, output.messages)
 
         prune(state, output.messages)

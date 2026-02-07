@@ -49,6 +49,12 @@ export interface PurgeStaleOutputs {
     protectedTools: string[]
 }
 
+export interface CompressConfirmations {
+    enabled: boolean
+    turns: number
+    maxLength: number
+}
+
 export interface TurnProtection {
     enabled: boolean
     turns: number
@@ -96,6 +102,7 @@ export interface PluginConfig {
         supersedeWrites: SupersedeWrites
         purgeErrors: PurgeErrors
         purgeStaleOutputs: PurgeStaleOutputs
+        compressConfirmations: CompressConfirmations
     }
     smallModelAdvisor?: SmallModelAdvisorConfig
 }
@@ -166,6 +173,11 @@ export const VALID_CONFIG_KEYS = new Set([
     "strategies.purgeStaleOutputs.minPrunableCount",
     "strategies.purgeStaleOutputs.preserveRecent",
     "strategies.purgeStaleOutputs.protectedTools",
+    // strategies.compressConfirmations
+    "strategies.compressConfirmations",
+    "strategies.compressConfirmations.enabled",
+    "strategies.compressConfirmations.turns",
+    "strategies.compressConfirmations.maxLength",
     // smallModelAdvisor
     "smallModelAdvisor",
     "smallModelAdvisor.enabled",
@@ -238,6 +250,9 @@ const CONFIG_SCHEMA: Record<string, ValidatorType> = {
     "strategies.purgeStaleOutputs.minPrunableCount": "number",
     "strategies.purgeStaleOutputs.preserveRecent": "number",
     "strategies.purgeStaleOutputs.protectedTools": "string[]",
+    "strategies.compressConfirmations.enabled": "boolean",
+    "strategies.compressConfirmations.turns": "number",
+    "strategies.compressConfirmations.maxLength": "number",
     "smallModelAdvisor.enabled": "boolean",
     "smallModelAdvisor.minPrunableCount": "number",
     "smallModelAdvisor.tokenThreshold": "number",
@@ -407,6 +422,11 @@ const defaultConfig: PluginConfig = {
             preserveRecent: 3,
             protectedTools: [],
         },
+        compressConfirmations: {
+            enabled: true,
+            turns: 2,
+            maxLength: 500,
+        },
     },
     // Small Model Advisor: disabled by default, user must explicitly enable
     // Per docs 2.1: defaults for all settings when enabled
@@ -574,6 +594,17 @@ function mergeStrategies(
                 override.purgeStaleOutputs?.protectedTools,
             ),
         },
+        compressConfirmations: {
+            enabled: val(
+                override.compressConfirmations?.enabled,
+                base.compressConfirmations.enabled,
+            ),
+            turns: val(override.compressConfirmations?.turns, base.compressConfirmations.turns),
+            maxLength: val(
+                override.compressConfirmations?.maxLength,
+                base.compressConfirmations.maxLength,
+            ),
+        },
     }
 }
 
@@ -691,6 +722,9 @@ function deepCloneConfig(config: PluginConfig): PluginConfig {
             purgeStaleOutputs: {
                 ...config.strategies.purgeStaleOutputs,
                 protectedTools: [...config.strategies.purgeStaleOutputs.protectedTools],
+            },
+            compressConfirmations: {
+                ...config.strategies.compressConfirmations,
             },
         },
         smallModelAdvisor: config.smallModelAdvisor

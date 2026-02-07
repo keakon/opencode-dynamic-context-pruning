@@ -186,7 +186,12 @@ async function executePruneOperation(
         logger.error("Failed to persist state", { error: err.message }),
     )
 
-    let result = formatPruningResultForTool(newPruneToolIds, toolMetadata, workingDirectory)
+    let result = formatPruningResultForTool(
+        newPruneToolIds,
+        toolMetadata,
+        workingDirectory,
+        distillationList.length,
+    )
 
     // Append skipped info to result message
     const notes: string[] = []

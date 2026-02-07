@@ -75,6 +75,9 @@ export interface SessionState {
     nextPrunableId: number // Auto-increment counter for stable prunable IDs
     prunableIdMap: Map<string, number>
     aggressivePruneExhausted: boolean
+    // Tracks the first message index modified in the current request cycle.
+    // Used for selective cleaning of stale <prunable-tools> blocks in cache-invalidated regions.
+    earliestModifiedMsgIndex: number
     cacheMetrics: CacheMetrics
     advisor: AdvisorState
 }

@@ -1,7 +1,7 @@
 export const PRUNE_TOOL_SPEC = `Prunes tool outputs from context. Supports two modes: discard (remove entirely) and extract (distill key findings then remove).
 
 ## The Prunable List
-A \`<prunable-tools>\` list shows available IDs. Format: \`ID: tool, parameter\`. Only use IDs from this list.
+Multiple \`<prunable-tools>\` blocks may appear in conversation history. Always use IDs from the **latest** block (highest \`version\` attribute). Ignore all older blocks.
 If no \`<prunable-tools>\` list is present, do NOT call this tool.
 
 ## When to Use discard
@@ -17,7 +17,7 @@ If no \`<prunable-tools>\` list is present, do NOT call this tool.
 - You need exact content for your CURRENT or NEXT action (e.g., editing a file)
 
 ## Format
-- \`discard\`: Array of numeric ID strings from \`<prunable-tools>\` to discard
+- \`discard\`: Array of numeric ID strings from the latest \`<prunable-tools>\` to discard
 - \`extract\`: Array of [id, distillation] tuples. Each tuple pairs a numeric ID with its distilled content.
 At least one of \`discard\` or \`extract\` must be provided. An ID must not appear in both.
 

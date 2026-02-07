@@ -127,6 +127,7 @@ export function createSessionState(): SessionState {
         nextPrunableId: 0,
         prunableIdMap: new Map(),
         aggressivePruneExhausted: false,
+        earliestModifiedMsgIndex: -1,
         cacheMetrics: createDefaultCacheMetrics(),
         advisor: createAdvisorState(),
     }
@@ -154,6 +155,7 @@ export function resetSessionState(state: SessionState): void {
     state.nextPrunableId = fresh.nextPrunableId
     state.prunableIdMap = fresh.prunableIdMap
     state.aggressivePruneExhausted = fresh.aggressivePruneExhausted
+    state.earliestModifiedMsgIndex = fresh.earliestModifiedMsgIndex
     state.cacheMetrics = createDefaultCacheMetrics()
     state.advisor = createAdvisorState()
 }

@@ -16,35 +16,33 @@ type NudgeUrgency = "none" | "normal" | "warn" | "critical"
 
 /**
  * Regex to match <prunable-tools>...</prunable-tools> blocks and trailing whitespace.
+ * Handles both versioned (<prunable-tools version="N">) and unversioned blocks.
  * Uses non-greedy matching to handle multiple blocks correctly.
  */
-const PRUNABLE_TOOLS_REGEX = /<prunable-tools>[\s\S]*?<\/prunable-tools>\s*/g
+const PRUNABLE_TOOLS_REGEX = /<prunable-tools[^>]*>[\s\S]*?<\/prunable-tools>\s*/g
 
 /**
- * Clean historical <prunable-tools> content from messages.
+ * Clean stale <prunable-tools> blocks from messages in the cache-invalidated region.
  *
- * Each request injects a new prunable-tools list, but the old injections
- * remain in historical messages. Since the content changes each time
- * (tool count, IDs, etc.), this breaks Anthropic's prefix caching mechanism,
- * causing cache_creation to grow continuously while cache_read stays low.
+ * After prune() or compressConfirmations() modify a message, all messages from that
+ * point onwards lose their prompt cache anyway. We can safely clean stale
+ * <prunable-tools> blocks in this region without additional cache cost.
  *
- * By cleaning historical injections, we keep message content stable and
- * maximize prompt cache hit rate.
+ * Messages before fromIndex are untouched to preserve cache.
+ * The last message is also skipped (it will receive a fresh injection).
  */
-const cleanHistoricalPrunableTools = (messages: WithParts[]): void => {
-    // Skip if there are fewer than 2 messages (nothing historical to clean)
+const cleanStalePrunableBlocks = (messages: WithParts[], fromIndex: number): void => {
     if (messages.length < 2) {
         return
     }
 
-    // Iterate all messages except the last one (which will receive new injection)
-    for (let i = 0; i < messages.length - 1; i++) {
+    const endIndex = messages.length - 1
+    for (let i = fromIndex; i < endIndex; i++) {
         const msg = messages[i]
         let modified = false
 
         for (const part of msg.parts) {
             if (part.type === "text" && typeof part.text === "string") {
-                // Reset regex lastIndex for correct matching with global flag
                 PRUNABLE_TOOLS_REGEX.lastIndex = 0
                 const newText = part.text.replace(PRUNABLE_TOOLS_REGEX, "").trim()
                 if (newText !== part.text) {
@@ -55,7 +53,6 @@ const cleanHistoricalPrunableTools = (messages: WithParts[]): void => {
         }
 
         if (modified) {
-            // Remove empty text parts to avoid affecting cache hash
             msg.parts = msg.parts.filter((part) => {
                 if (part.type === "text" && typeof part.text === "string") {
                     return part.text.length > 0
@@ -137,8 +134,10 @@ const getNudgeUrgency = (
     return "none"
 }
 
-const wrapPrunableTools = (content: string): string => `<prunable-tools>
-Only these IDs are valid:
+const wrapPrunableTools = (
+    content: string,
+    version: number,
+): string => `<prunable-tools version="${version}">
 ${content}
 </prunable-tools>`
 
@@ -245,7 +244,7 @@ const buildPrunableToolsList = (
         `Found ${prunableEntries.length} prunable tools (version=${state.prunableListVersion})`,
     )
 
-    return wrapPrunableTools(lines.join("\n"))
+    return wrapPrunableTools(lines.join("\n"), state.prunableListVersion)
 }
 
 export const insertPruneToolContext = (
@@ -283,9 +282,12 @@ export const insertPruneToolContext = (
         return false
     }
 
-    // Clean historical prunable-tools injections only when we are about to inject a new list.
-    // This keeps message content stable across requests when injection is skipped.
-    cleanHistoricalPrunableTools(messages)
+    // Selective cleaning: only clean stale <prunable-tools> blocks in messages
+    // that are already cache-invalidated (at or after earliestModifiedMsgIndex).
+    // Messages before that index are untouched to preserve prompt cache.
+    if (state.earliestModifiedMsgIndex >= 0) {
+        cleanStalePrunableBlocks(messages, state.earliestModifiedMsgIndex)
+    }
 
     logger.debug("prunable-tools: \n" + prunableToolsList)
 
