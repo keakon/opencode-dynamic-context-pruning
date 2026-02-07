@@ -18,10 +18,20 @@ export interface StatsCommandContext {
     messages: WithParts[]
 }
 
+function formatCacheHitRate(cacheRead: number, input: number): string {
+    const total = cacheRead + input
+    if (total === 0) return "N/A"
+    return ((cacheRead / total) * 100).toFixed(1) + "%"
+}
+
 function formatStatsMessage(
     sessionTokens: number,
     sessionTools: number,
     allTime: AggregatedStats,
+    sessionCacheRead: number,
+    sessionCacheWrite: number,
+    sessionInput: number,
+    sessionRequests: number,
 ): string {
     const lines: string[] = []
 
@@ -33,12 +43,32 @@ function formatStatsMessage(
     lines.push("─".repeat(60))
     lines.push(`  Tokens pruned: ~${formatTokenCount(sessionTokens)}`)
     lines.push(`  Tools pruned:   ${sessionTools}`)
+    if (sessionRequests > 0) {
+        lines.push("")
+        lines.push("  Cache Performance:")
+        lines.push(`    Hit rate:     ${formatCacheHitRate(sessionCacheRead, sessionInput)}`)
+        lines.push(`    Cache read:  ~${formatTokenCount(sessionCacheRead)}`)
+        lines.push(`    Cache write: ~${formatTokenCount(sessionCacheWrite)}`)
+        lines.push(`    Base input:  ~${formatTokenCount(sessionInput)}`)
+        lines.push(`    Requests:     ${sessionRequests}`)
+    }
     lines.push("")
     lines.push("All-time:")
     lines.push("─".repeat(60))
     lines.push(`  Tokens saved:  ~${formatTokenCount(allTime.totalTokens)}`)
     lines.push(`  Tools pruned:   ${allTime.totalTools}`)
     lines.push(`  Sessions:       ${allTime.sessionCount}`)
+    if (allTime.totalRequests > 0) {
+        lines.push("")
+        lines.push("  Cache Performance:")
+        lines.push(
+            `    Hit rate:     ${formatCacheHitRate(allTime.totalCacheRead, allTime.totalInput)}`,
+        )
+        lines.push(`    Cache read:  ~${formatTokenCount(allTime.totalCacheRead)}`)
+        lines.push(`    Cache write: ~${formatTokenCount(allTime.totalCacheWrite)}`)
+        lines.push(`    Base input:  ~${formatTokenCount(allTime.totalInput)}`)
+        lines.push(`    Requests:     ${allTime.totalRequests}`)
+    }
 
     return lines.join("\n")
 }
@@ -53,7 +83,15 @@ export async function handleStatsCommand(ctx: StatsCommandContext): Promise<void
     // All-time stats from storage files
     const allTime = await loadAllSessionStats(logger)
 
-    const message = formatStatsMessage(sessionTokens, sessionTools, allTime)
+    const message = formatStatsMessage(
+        sessionTokens,
+        sessionTools,
+        allTime,
+        state.cacheMetrics.totalCacheRead,
+        state.cacheMetrics.totalCacheWrite,
+        state.cacheMetrics.totalInput,
+        state.cacheMetrics.requestCount,
+    )
 
     const params = getCurrentParams(state, messages, logger)
     await sendIgnoredMessage(client, sessionId, message, params, logger)

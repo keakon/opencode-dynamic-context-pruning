@@ -6,11 +6,21 @@ import { homedir } from "os"
 export class Logger {
     private logDir: string
     public enabled: boolean
+    public advisorEnabled: boolean
 
-    constructor(enabled: boolean) {
+    constructor(enabled: boolean, advisorEnabled: boolean = false) {
         this.enabled = enabled
+        this.advisorEnabled = advisorEnabled
         const opencodeConfigDir = join(homedir(), ".config", "opencode")
         this.logDir = join(opencodeConfigDir, "logs", "dcp")
+    }
+
+    private shouldLog(message: string): boolean {
+        if (this.enabled) return true
+        if (this.advisorEnabled && typeof message === "string" && message.startsWith("[advisor]")) {
+            return true
+        }
+        return false
     }
 
     private async ensureLogDir() {
@@ -68,7 +78,7 @@ export class Logger {
     }
 
     private async write(level: string, component: string, message: string, data?: any) {
-        if (!this.enabled) return
+        if (!this.shouldLog(message)) return
 
         try {
             await this.ensureLogDir()
@@ -89,25 +99,25 @@ export class Logger {
     }
 
     info(message: string, data?: any) {
-        if (!this.enabled) return
+        if (!this.shouldLog(message)) return
         const component = this.getCallerFile(2)
         return this.write("INFO", component, message, data)
     }
 
     debug(message: string, data?: any) {
-        if (!this.enabled) return
+        if (!this.shouldLog(message)) return
         const component = this.getCallerFile(2)
         return this.write("DEBUG", component, message, data)
     }
 
     warn(message: string, data?: any) {
-        if (!this.enabled) return
+        if (!this.shouldLog(message)) return
         const component = this.getCallerFile(2)
         return this.write("WARN", component, message, data)
     }
 
     error(message: string, data?: any) {
-        if (!this.enabled) return
+        if (!this.shouldLog(message)) return
         const component = this.getCallerFile(2)
         return this.write("ERROR", component, message, data)
     }

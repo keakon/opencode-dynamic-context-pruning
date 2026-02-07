@@ -262,6 +262,77 @@ function collectAdvisorFeedback(state: SessionState, config: PluginConfig, logge
     }
 }
 
+/**
+ * Collect cache metrics from assistant messages that haven't been processed yet.
+ * This captures cache_read, cache_write, input, output, and reasoning token counts
+ * from each API response for before/after optimization comparison.
+ */
+function collectCacheMetrics(state: SessionState, messages: WithParts[], logger: Logger): void {
+    const metrics = state.cacheMetrics
+
+    // Scan backwards for new assistant messages with token data
+    const newEntries: WithParts[] = []
+    for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i]
+        if (msg.info.role !== "assistant") continue
+        if ((msg.info as any).summary === true) continue // Skip compaction summaries
+
+        const tokens = (msg.info as any).tokens
+        if (!tokens || (!tokens.input && !tokens.output && !tokens.cache?.read)) continue
+
+        if (msg.info.id === metrics.lastProcessedMsgId) break // Already processed
+        newEntries.push(msg)
+    }
+
+    if (newEntries.length === 0) return
+
+    // Process in chronological order (newEntries is reversed)
+    for (let i = newEntries.length - 1; i >= 0; i--) {
+        const msg = newEntries[i]
+        const tokens = (msg.info as any).tokens
+
+        const cacheRead = tokens.cache?.read || 0
+        const cacheWrite = tokens.cache?.write || 0
+        const input = tokens.input || 0
+        const output = tokens.output || 0
+        const reasoning = tokens.reasoning || 0
+
+        metrics.totalCacheRead += cacheRead
+        metrics.totalCacheWrite += cacheWrite
+        metrics.totalInput += input
+        metrics.totalOutput += output
+        metrics.totalReasoning += reasoning
+        metrics.requestCount++
+        metrics.turnHistory.push({
+            turn: state.currentTurn,
+            cacheRead,
+            cacheWrite,
+            input,
+            output,
+            reasoning,
+            timestamp: new Date().toISOString(),
+        })
+        metrics.lastProcessedMsgId = msg.info.id
+    }
+
+    // Cap history size to prevent unbounded growth
+    const MAX_HISTORY = 1000
+    if (metrics.turnHistory.length > MAX_HISTORY) {
+        metrics.turnHistory = metrics.turnHistory.slice(-MAX_HISTORY)
+    }
+
+    logger.debug(`Collected cache metrics from ${newEntries.length} new response(s)`, {
+        requestCount: metrics.requestCount,
+        cacheHitRate:
+            metrics.totalCacheRead + metrics.totalInput > 0
+                ? (
+                      (metrics.totalCacheRead / (metrics.totalCacheRead + metrics.totalInput)) *
+                      100
+                  ).toFixed(1) + "%"
+                : "N/A",
+    })
+}
+
 export function createSystemPromptHandler(
     state: SessionState,
     logger: Logger,
@@ -302,6 +373,9 @@ export function createChatMessageTransformHandler(
         if (state.isSubAgent) {
             return
         }
+
+        // Collect cache metrics from new assistant messages (before modifying anything)
+        collectCacheMetrics(state, output.messages, logger)
 
         // Advisor turn start: cleanup and prepare for feedback collection
         advisorTurnStart(state.advisor, state.currentTurn)

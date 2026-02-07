@@ -8,7 +8,7 @@ import * as fs from "fs/promises"
 import { existsSync } from "fs"
 import { homedir } from "os"
 import { join } from "path"
-import type { SessionState, SessionStats, AdvisorState } from "./types"
+import type { SessionState, SessionStats, AdvisorState, CacheMetrics } from "./types"
 import type { Logger } from "../logger"
 
 export interface PersistedPrune {
@@ -29,6 +29,7 @@ export interface PersistedSessionState {
     prunableIdMap?: Array<[string, number]>
     nextPrunableId?: number
     compressSummaries?: Array<[string, string]>
+    cacheMetrics?: CacheMetrics
     lastUpdated: string
 }
 
@@ -69,6 +70,7 @@ export async function saveSessionState(
             },
             prunableIdMap: Array.from(sessionState.prunableIdMap.entries()),
             nextPrunableId: sessionState.nextPrunableId,
+            cacheMetrics: sessionState.cacheMetrics,
             lastUpdated: new Date().toISOString(),
         }
 
@@ -142,6 +144,12 @@ export interface AggregatedStats {
     totalTokens: number
     totalTools: number
     sessionCount: number
+    totalCacheRead: number
+    totalCacheWrite: number
+    totalInput: number
+    totalOutput: number
+    totalReasoning: number
+    totalRequests: number
 }
 
 export async function loadAllSessionStats(logger: Logger): Promise<AggregatedStats> {
@@ -149,6 +157,12 @@ export async function loadAllSessionStats(logger: Logger): Promise<AggregatedSta
         totalTokens: 0,
         totalTools: 0,
         sessionCount: 0,
+        totalCacheRead: 0,
+        totalCacheWrite: 0,
+        totalInput: 0,
+        totalOutput: 0,
+        totalReasoning: 0,
+        totalRequests: 0,
     }
 
     try {
@@ -169,6 +183,14 @@ export async function loadAllSessionStats(logger: Logger): Promise<AggregatedSta
                     result.totalTokens += state.stats.totalPruneTokens
                     result.totalTools += state.prune.toolIds.length
                     result.sessionCount++
+                }
+                if (state?.cacheMetrics) {
+                    result.totalCacheRead += state.cacheMetrics.totalCacheRead || 0
+                    result.totalCacheWrite += state.cacheMetrics.totalCacheWrite || 0
+                    result.totalInput += state.cacheMetrics.totalInput || 0
+                    result.totalOutput += state.cacheMetrics.totalOutput || 0
+                    result.totalReasoning += state.cacheMetrics.totalReasoning || 0
+                    result.totalRequests += state.cacheMetrics.requestCount || 0
                 }
             } catch {
                 // Skip invalid files

@@ -16,7 +16,7 @@ const plugin: Plugin = (async (ctx) => {
         return {}
     }
 
-    const logger = new Logger(config.debug)
+    const logger = new Logger(config.debug, config.smallModelAdvisor?.debug ?? false)
     const state = createSessionState()
 
     logger.info("DCP initialized", {

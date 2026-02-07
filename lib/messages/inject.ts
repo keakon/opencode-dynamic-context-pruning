@@ -259,10 +259,6 @@ export const insertPruneToolContext = (
         return false
     }
 
-    // Clean historical prunable-tools injections to maintain stable message content
-    // for better Anthropic Prompt Caching hit rate
-    cleanHistoricalPrunableTools(messages)
-
     const prunableToolsList = buildPrunableToolsList(state, config, logger, messages)
     if (!prunableToolsList) {
         return false
@@ -286,6 +282,10 @@ export const insertPruneToolContext = (
     ) {
         return false
     }
+
+    // Clean historical prunable-tools injections only when we are about to inject a new list.
+    // This keeps message content stable across requests when injection is skipped.
+    cleanHistoricalPrunableTools(messages)
 
     logger.debug("prunable-tools: \n" + prunableToolsList)
 

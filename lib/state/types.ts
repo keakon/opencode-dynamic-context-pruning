@@ -22,6 +22,27 @@ export interface SessionStats {
     currentPrunableTokens: number
 }
 
+export interface TurnCacheEntry {
+    turn: number
+    cacheRead: number
+    cacheWrite: number
+    input: number
+    output: number
+    reasoning: number
+    timestamp: string
+}
+
+export interface CacheMetrics {
+    totalCacheRead: number
+    totalCacheWrite: number
+    totalInput: number
+    totalOutput: number
+    totalReasoning: number
+    requestCount: number
+    turnHistory: TurnCacheEntry[]
+    lastProcessedMsgId?: string
+}
+
 export interface Prune {
     toolIds: string[]
     toolIdSet: Set<string>
@@ -54,6 +75,7 @@ export interface SessionState {
     nextPrunableId: number // Auto-increment counter for stable prunable IDs
     prunableIdMap: Map<string, number>
     aggressivePruneExhausted: boolean
+    cacheMetrics: CacheMetrics
     advisor: AdvisorState
 }
 
