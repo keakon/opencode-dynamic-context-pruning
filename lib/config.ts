@@ -381,21 +381,21 @@ const defaultConfig: PluginConfig = {
         protectedTools: [...DEFAULT_PROTECTED_TOOLS],
     },
     turnProtection: {
-        enabled: false,
+        enabled: true,
         turns: 4,
     },
     tokenBudget: {
         enabled: true,
-        warnThreshold: 60000,
-        criticalThreshold: 100000,
+        warnThreshold: 80000,
+        criticalThreshold: 120000,
     },
     protectedFilePatterns: [],
     tools: {
         settings: {
             nudgeEnabled: true,
-            nudgeFrequency: 10,
+            nudgeFrequency: 30,
             protectedTools: [...DEFAULT_PROTECTED_TOOLS],
-            injectPrunableTools: "on_demand",
+            injectPrunableTools: "on_warn",
         },
         prune: {
             enabled: true,
@@ -417,8 +417,8 @@ const defaultConfig: PluginConfig = {
         },
         purgeStaleOutputs: {
             enabled: true,
-            turns: 5,
-            minPrunableCount: 10,
+            turns: 7,
+            minPrunableCount: 20,
             preserveRecent: 3,
             protectedTools: [],
         },
