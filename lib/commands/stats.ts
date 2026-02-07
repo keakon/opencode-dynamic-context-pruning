@@ -18,8 +18,8 @@ export interface StatsCommandContext {
     messages: WithParts[]
 }
 
-function formatCacheHitRate(cacheRead: number, input: number): string {
-    const total = cacheRead + input
+function formatCacheHitRate(cacheRead: number, cacheWrite: number, input: number): string {
+    const total = cacheRead + cacheWrite + input
     if (total === 0) return "N/A"
     return ((cacheRead / total) * 100).toFixed(1) + "%"
 }
@@ -46,7 +46,9 @@ function formatStatsMessage(
     if (sessionRequests > 0) {
         lines.push("")
         lines.push("  Cache Performance:")
-        lines.push(`    Hit rate:     ${formatCacheHitRate(sessionCacheRead, sessionInput)}`)
+        lines.push(
+            `    Hit rate:     ${formatCacheHitRate(sessionCacheRead, sessionCacheWrite, sessionInput)}`,
+        )
         lines.push(`    Cache read:  ~${formatTokenCount(sessionCacheRead)}`)
         lines.push(`    Cache write: ~${formatTokenCount(sessionCacheWrite)}`)
         lines.push(`    Base input:  ~${formatTokenCount(sessionInput)}`)
@@ -62,7 +64,7 @@ function formatStatsMessage(
         lines.push("")
         lines.push("  Cache Performance:")
         lines.push(
-            `    Hit rate:     ${formatCacheHitRate(allTime.totalCacheRead, allTime.totalInput)}`,
+            `    Hit rate:     ${formatCacheHitRate(allTime.totalCacheRead, allTime.totalCacheWrite, allTime.totalInput)}`,
         )
         lines.push(`    Cache read:  ~${formatTokenCount(allTime.totalCacheRead)}`)
         lines.push(`    Cache write: ~${formatTokenCount(allTime.totalCacheWrite)}`)
