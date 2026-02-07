@@ -1,6 +1,7 @@
 export { deduplicate } from "./deduplication"
-export { createDiscardTool, createExtractTool } from "./tools"
+export { createPruneTool } from "./tools"
 export { supersedeWrites } from "./supersede-writes"
 export { purgeErrors } from "./purge-errors"
 export { purgeStaleOutputs } from "./purge-stale-outputs"
+export { compressConfirmations } from "./compress-confirmations"
 export { aggressivePrune } from "./aggressive-prune"

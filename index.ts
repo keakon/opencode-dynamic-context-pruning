@@ -2,7 +2,7 @@ import type { Plugin } from "@opencode-ai/plugin"
 import { getConfig } from "./lib/config"
 import { Logger } from "./lib/logger"
 import { createSessionState } from "./lib/state"
-import { createDiscardTool, createExtractTool } from "./lib/strategies"
+import { createPruneTool } from "./lib/strategies"
 import {
     createChatMessageTransformHandler,
     createCommandExecuteHandler,
@@ -16,7 +16,7 @@ const plugin: Plugin = (async (ctx) => {
         return {}
     }
 
-    const logger = new Logger(config.debug)
+    const logger = new Logger(config.debug, config.smallModelAdvisor?.debug ?? false)
     const state = createSessionState()
 
     logger.info("DCP initialized", {
@@ -55,17 +55,8 @@ const plugin: Plugin = (async (ctx) => {
             ctx.directory,
         ),
         tool: {
-            ...(config.tools.discard.enabled && {
-                discard: createDiscardTool({
-                    client: ctx.client,
-                    state,
-                    logger,
-                    config,
-                    workingDirectory: ctx.directory,
-                }),
-            }),
-            ...(config.tools.extract.enabled && {
-                extract: createExtractTool({
+            ...(config.tools.prune.enabled && {
+                prune: createPruneTool({
                     client: ctx.client,
                     state,
                     logger,
@@ -84,8 +75,7 @@ const plugin: Plugin = (async (ctx) => {
             }
 
             const toolsToAdd: string[] = []
-            if (config.tools.discard.enabled) toolsToAdd.push("discard")
-            if (config.tools.extract.enabled) toolsToAdd.push("extract")
+            if (config.tools.prune.enabled) toolsToAdd.push("prune")
 
             if (toolsToAdd.length > 0) {
                 const existingPrimaryTools = opencodeConfig.experimental?.primary_tools ?? []

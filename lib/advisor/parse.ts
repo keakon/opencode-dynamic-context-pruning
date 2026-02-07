@@ -6,10 +6,13 @@
  * IDs are normalized to strings as per docs/SMALL_MODEL_ADVISOR.md specification.
  */
 
-import type { AdvisorModelResponse, SuggestedAction } from "./types"
+import type { AdvisorModelResponse } from "./types"
 
-/** Valid action values */
-const VALID_ACTIONS: Set<SuggestedAction> = new Set(["discard", "extract"])
+// Maximum summary length per docs spec
+const MAX_SUMMARY_LENGTH = 100
+
+// Maximum reasoning length per prompt constraint (≤50 chars)
+const MAX_REASONING_LENGTH = 50
 
 /**
  * Normalize an ID to string format. Accepts both string and number inputs.
@@ -100,17 +103,17 @@ export function parseAdvisorModelResponse(
                 const summary = item[1]
                 if (normalizedId !== null && typeof summary === "string" && summary.trim()) {
                     // Truncate summary to MAX_SUMMARY_LENGTH (per docs spec)
-                    extractItems.push([normalizedId, truncateSummary(summary)])
+                    extractItems.push([normalizedId, truncateString(summary, MAX_SUMMARY_LENGTH)])
                 }
             }
         }
     }
 
-    // Extract reasoning
-    const reasoning =
-        typeof obj.reasoning === "string" && obj.reasoning.trim()
-            ? obj.reasoning.trim()
-            : "No reasoning provided"
+    // Extract reasoning (truncate to MAX_REASONING_LENGTH to match prompt constraint)
+    let reasoning = "No reasoning provided"
+    if (typeof obj.reasoning === "string" && obj.reasoning.trim()) {
+        reasoning = truncateString(obj.reasoning, MAX_REASONING_LENGTH)
+    }
 
     // Ensure no duplicate IDs between discard and extract
     const extractIds = new Set(extractItems.map(([id]) => id))
@@ -136,23 +139,13 @@ export function parseAdvisorModelResponse(
     }
 }
 
-// Maximum summary length per docs spec
-const MAX_SUMMARY_LENGTH = 100
-
 /**
- * Truncate summary to max length, ensuring we don't cut in the middle of a word.
+ * Truncate a string to maxLen, adding "..." if truncated.
  */
-function truncateSummary(summary: string): string {
-    const trimmed = summary.trim()
-    if (trimmed.length <= MAX_SUMMARY_LENGTH) {
+function truncateString(str: string, maxLen: number): string {
+    const trimmed = str.trim()
+    if (trimmed.length <= maxLen) {
         return trimmed
     }
-    // Truncate and add ellipsis
-    return trimmed.slice(0, MAX_SUMMARY_LENGTH - 3) + "..."
+    return trimmed.slice(0, maxLen - 3) + "..."
 }
-
-/**
- * Legacy function name for backward compatibility.
- * @deprecated Use parseAdvisorModelResponse instead
- */
-export const parseAdvisorResponse = parseAdvisorModelResponse

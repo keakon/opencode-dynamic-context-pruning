@@ -7,6 +7,7 @@ import {
     supersedeWrites,
     purgeErrors,
     purgeStaleOutputs,
+    compressConfirmations,
     aggressivePrune,
 } from "./strategies"
 import { prune, insertPruneToolContext } from "./messages"
@@ -181,11 +182,8 @@ function injectAdvisorSuggestions(
         return
     }
 
-    // Build context for tool info lookup
-    const context = buildAnalysisContext(state, config, messages, advisorState)
-
     // Format the suggestion
-    const suggestionText = formatAdvisorSuggestion(pending, context)
+    const suggestionText = formatAdvisorSuggestion(pending)
     if (!suggestionText) {
         return
     }
@@ -201,8 +199,8 @@ function injectAdvisorSuggestions(
             if (part.type === "text") {
                 const textPart = part as any
                 if (typeof textPart.text === "string") {
-                    // Inject BEFORE the prunable-tools list if present
-                    const prunableIndex = textPart.text.indexOf("<prunable-tools>")
+                    // Inject BEFORE the prunable-tools list if present (supports versioned blocks)
+                    const prunableIndex = textPart.text.search(/<prunable-tools[\s>]/)
                     if (prunableIndex !== -1) {
                         textPart.text =
                             textPart.text.slice(0, prunableIndex) +
@@ -265,6 +263,77 @@ function collectAdvisorFeedback(state: SessionState, config: PluginConfig, logge
     }
 }
 
+/**
+ * Collect cache metrics from assistant messages that haven't been processed yet.
+ * This captures cache_read, cache_write, input, output, and reasoning token counts
+ * from each API response for before/after optimization comparison.
+ */
+function collectCacheMetrics(state: SessionState, messages: WithParts[], logger: Logger): void {
+    const metrics = state.cacheMetrics
+
+    // Scan backwards for new assistant messages with token data
+    const newEntries: WithParts[] = []
+    for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i]
+        if (msg.info.role !== "assistant") continue
+        if ((msg.info as any).summary === true) continue // Skip compaction summaries
+
+        const tokens = (msg.info as any).tokens
+        if (!tokens || (!tokens.input && !tokens.output && !tokens.cache?.read)) continue
+
+        if (msg.info.id === metrics.lastProcessedMsgId) break // Already processed
+        newEntries.push(msg)
+    }
+
+    if (newEntries.length === 0) return
+
+    // Process in chronological order (newEntries is reversed)
+    for (let i = newEntries.length - 1; i >= 0; i--) {
+        const msg = newEntries[i]
+        const tokens = (msg.info as any).tokens
+
+        const cacheRead = tokens.cache?.read || 0
+        const cacheWrite = tokens.cache?.write || 0
+        const input = tokens.input || 0
+        const output = tokens.output || 0
+        const reasoning = tokens.reasoning || 0
+
+        metrics.totalCacheRead += cacheRead
+        metrics.totalCacheWrite += cacheWrite
+        metrics.totalInput += input
+        metrics.totalOutput += output
+        metrics.totalReasoning += reasoning
+        metrics.requestCount++
+        metrics.turnHistory.push({
+            turn: state.currentTurn,
+            cacheRead,
+            cacheWrite,
+            input,
+            output,
+            reasoning,
+            timestamp: new Date().toISOString(),
+        })
+        metrics.lastProcessedMsgId = msg.info.id
+    }
+
+    // Cap history size to prevent unbounded growth
+    const MAX_HISTORY = 1000
+    if (metrics.turnHistory.length > MAX_HISTORY) {
+        metrics.turnHistory = metrics.turnHistory.slice(-MAX_HISTORY)
+    }
+
+    logger.debug(`Collected cache metrics from ${newEntries.length} new response(s)`, {
+        requestCount: metrics.requestCount,
+        cacheHitRate:
+            metrics.totalCacheRead + metrics.totalInput > 0
+                ? (
+                      (metrics.totalCacheRead / (metrics.totalCacheRead + metrics.totalInput)) *
+                      100
+                  ).toFixed(1) + "%"
+                : "N/A",
+    })
+}
+
 export function createSystemPromptHandler(
     state: SessionState,
     logger: Logger,
@@ -281,21 +350,11 @@ export function createSystemPromptHandler(
             return
         }
 
-        const discardEnabled = config.tools.discard.enabled
-        const extractEnabled = config.tools.extract.enabled
-
-        let promptName: string
-        if (discardEnabled && extractEnabled) {
-            promptName = "system/system-prompt-both"
-        } else if (discardEnabled) {
-            promptName = "system/system-prompt-discard"
-        } else if (extractEnabled) {
-            promptName = "system/system-prompt-extract"
-        } else {
+        if (!config.tools.prune.enabled) {
             return
         }
 
-        const syntheticPrompt = loadPrompt(promptName)
+        const syntheticPrompt = loadPrompt("system/system-prompt-both")
         output.system.push(syntheticPrompt)
     }
 }
@@ -315,6 +374,9 @@ export function createChatMessageTransformHandler(
         if (state.isSubAgent) {
             return
         }
+
+        // Collect cache metrics from new assistant messages (before modifying anything)
+        collectCacheMetrics(state, output.messages, logger)
 
         // Advisor turn start: cleanup and prepare for feedback collection
         advisorTurnStart(state.advisor, state.currentTurn)
@@ -343,11 +405,16 @@ export function createChatMessageTransformHandler(
             state.toolTokensCacheHash = tokenCacheHash
         }
 
+        // Reset earliest modified message index for this request cycle.
+        // Used by insertPruneToolContext to selectively clean stale <prunable-tools> blocks.
+        state.earliestModifiedMsgIndex = -1
+
         // Run automatic pruning strategies
         deduplicate(state, logger, config, output.messages)
         supersedeWrites(state, logger, config, output.messages)
         purgeErrors(state, logger, config, output.messages)
         purgeStaleOutputs(state, logger, config, output.messages)
+        compressConfirmations(state, logger, config, output.messages)
         aggressivePrune(state, logger, config, output.messages)
 
         prune(state, output.messages)
@@ -362,10 +429,17 @@ export function createChatMessageTransformHandler(
         }
 
         // Insert prunable-tools context (possibly suppressed by advisor)
-        insertPruneToolContext(state, config, logger, output.messages, state.advisor)
+        const listInjected = insertPruneToolContext(
+            state,
+            config,
+            logger,
+            output.messages,
+            state.advisor,
+        )
 
-        // Inject pending advisor suggestions (if available and not consumed)
-        if (hasPendingSuggestion(state.advisor)) {
+        // Inject pending advisor suggestions only when prunable-tools list was injected,
+        // otherwise the model would see suggestion IDs without a list to resolve them
+        if (listInjected && hasPendingSuggestion(state.advisor)) {
             injectAdvisorSuggestions(state, config, output.messages, logger)
         }
 

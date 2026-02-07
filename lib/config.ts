@@ -9,11 +9,7 @@ export interface Deduplication {
     protectedTools: string[]
 }
 
-export interface DiscardTool {
-    enabled: boolean
-}
-
-export interface ExtractTool {
+export interface PruneTool {
     enabled: boolean
     showDistillation: boolean
 }
@@ -27,8 +23,7 @@ export interface ToolSettings {
 
 export interface Tools {
     settings: ToolSettings
-    discard: DiscardTool
-    extract: ExtractTool
+    prune: PruneTool
 }
 
 export interface Commands {
@@ -52,6 +47,12 @@ export interface PurgeStaleOutputs {
     minPrunableCount: number
     preserveRecent: number
     protectedTools: string[]
+}
+
+export interface CompressConfirmations {
+    enabled: boolean
+    turns: number
+    maxLength: number
 }
 
 export interface TurnProtection {
@@ -101,6 +102,7 @@ export interface PluginConfig {
         supersedeWrites: SupersedeWrites
         purgeErrors: PurgeErrors
         purgeStaleOutputs: PurgeStaleOutputs
+        compressConfirmations: CompressConfirmations
     }
     smallModelAdvisor?: SmallModelAdvisorConfig
 }
@@ -109,8 +111,7 @@ const DEFAULT_PROTECTED_TOOLS = [
     "task",
     "todowrite",
     "todoread",
-    "discard",
-    "extract",
+    "prune",
     "batch",
     "write",
     "edit",
@@ -149,11 +150,9 @@ export const VALID_CONFIG_KEYS = new Set([
     "tools.settings.nudgeFrequency",
     "tools.settings.protectedTools",
     "tools.settings.injectPrunableTools",
-    "tools.discard",
-    "tools.discard.enabled",
-    "tools.extract",
-    "tools.extract.enabled",
-    "tools.extract.showDistillation",
+    "tools.prune",
+    "tools.prune.enabled",
+    "tools.prune.showDistillation",
     "strategies",
     // strategies.deduplication
     "strategies.deduplication",
@@ -174,6 +173,11 @@ export const VALID_CONFIG_KEYS = new Set([
     "strategies.purgeStaleOutputs.minPrunableCount",
     "strategies.purgeStaleOutputs.preserveRecent",
     "strategies.purgeStaleOutputs.protectedTools",
+    // strategies.compressConfirmations
+    "strategies.compressConfirmations",
+    "strategies.compressConfirmations.enabled",
+    "strategies.compressConfirmations.turns",
+    "strategies.compressConfirmations.maxLength",
     // smallModelAdvisor
     "smallModelAdvisor",
     "smallModelAdvisor.enabled",
@@ -233,9 +237,8 @@ const CONFIG_SCHEMA: Record<string, ValidatorType> = {
     "tools.settings.nudgeFrequency": "number",
     "tools.settings.protectedTools": "string[]",
     "tools.settings.injectPrunableTools": ["always", "on_demand", "on_warn"],
-    "tools.discard.enabled": "boolean",
-    "tools.extract.enabled": "boolean",
-    "tools.extract.showDistillation": "boolean",
+    "tools.prune.enabled": "boolean",
+    "tools.prune.showDistillation": "boolean",
     "strategies.deduplication.enabled": "boolean",
     "strategies.deduplication.protectedTools": "string[]",
     "strategies.supersedeWrites.enabled": "boolean",
@@ -247,6 +250,9 @@ const CONFIG_SCHEMA: Record<string, ValidatorType> = {
     "strategies.purgeStaleOutputs.minPrunableCount": "number",
     "strategies.purgeStaleOutputs.preserveRecent": "number",
     "strategies.purgeStaleOutputs.protectedTools": "string[]",
+    "strategies.compressConfirmations.enabled": "boolean",
+    "strategies.compressConfirmations.turns": "number",
+    "strategies.compressConfirmations.maxLength": "number",
     "smallModelAdvisor.enabled": "boolean",
     "smallModelAdvisor.minPrunableCount": "number",
     "smallModelAdvisor.tokenThreshold": "number",
@@ -375,26 +381,23 @@ const defaultConfig: PluginConfig = {
         protectedTools: [...DEFAULT_PROTECTED_TOOLS],
     },
     turnProtection: {
-        enabled: false,
+        enabled: true,
         turns: 4,
     },
     tokenBudget: {
         enabled: true,
-        warnThreshold: 60000,
-        criticalThreshold: 100000,
+        warnThreshold: 80000,
+        criticalThreshold: 120000,
     },
     protectedFilePatterns: [],
     tools: {
         settings: {
             nudgeEnabled: true,
-            nudgeFrequency: 10,
+            nudgeFrequency: 30,
             protectedTools: [...DEFAULT_PROTECTED_TOOLS],
-            injectPrunableTools: "on_demand",
+            injectPrunableTools: "on_warn",
         },
-        discard: {
-            enabled: true,
-        },
-        extract: {
+        prune: {
             enabled: true,
             showDistillation: false,
         },
@@ -414,10 +417,15 @@ const defaultConfig: PluginConfig = {
         },
         purgeStaleOutputs: {
             enabled: true,
-            turns: 5,
-            minPrunableCount: 10,
+            turns: 7,
+            minPrunableCount: 20,
             preserveRecent: 3,
             protectedTools: [],
+        },
+        compressConfirmations: {
+            enabled: true,
+            turns: 2,
+            maxLength: 500,
         },
     },
     // Small Model Advisor: disabled by default, user must explicitly enable
@@ -586,6 +594,17 @@ function mergeStrategies(
                 override.purgeStaleOutputs?.protectedTools,
             ),
         },
+        compressConfirmations: {
+            enabled: val(
+                override.compressConfirmations?.enabled,
+                base.compressConfirmations.enabled,
+            ),
+            turns: val(override.compressConfirmations?.turns, base.compressConfirmations.turns),
+            maxLength: val(
+                override.compressConfirmations?.maxLength,
+                base.compressConfirmations.maxLength,
+            ),
+        },
     }
 }
 
@@ -607,15 +626,9 @@ function mergeTools(
                 base.settings.injectPrunableTools,
             ),
         },
-        discard: {
-            enabled: val(override.discard?.enabled, base.discard.enabled),
-        },
-        extract: {
-            enabled: val(override.extract?.enabled, base.extract.enabled),
-            showDistillation: val(
-                override.extract?.showDistillation,
-                base.extract.showDistillation,
-            ),
+        prune: {
+            enabled: val(override.prune?.enabled, base.prune.enabled),
+            showDistillation: val(override.prune?.showDistillation, base.prune.showDistillation),
         },
     }
 }
@@ -692,8 +705,7 @@ function deepCloneConfig(config: PluginConfig): PluginConfig {
                 ...config.tools.settings,
                 protectedTools: [...config.tools.settings.protectedTools],
             },
-            discard: { ...config.tools.discard },
-            extract: { ...config.tools.extract },
+            prune: { ...config.tools.prune },
         },
         strategies: {
             deduplication: {
@@ -710,6 +722,9 @@ function deepCloneConfig(config: PluginConfig): PluginConfig {
             purgeStaleOutputs: {
                 ...config.strategies.purgeStaleOutputs,
                 protectedTools: [...config.strategies.purgeStaleOutputs.protectedTools],
+            },
+            compressConfirmations: {
+                ...config.strategies.compressConfirmations,
             },
         },
         smallModelAdvisor: config.smallModelAdvisor

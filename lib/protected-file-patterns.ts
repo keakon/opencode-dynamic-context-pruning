@@ -85,8 +85,16 @@ export function getFilePathFromParameters(parameters: unknown): string | undefin
         return undefined
     }
 
-    const filePath = (parameters as Record<string, unknown>).filePath
-    return typeof filePath === "string" && filePath.length > 0 ? filePath : undefined
+    const record = parameters as Record<string, unknown>
+    const filePath = record.filePath
+    if (typeof filePath === "string" && filePath.length > 0) {
+        return filePath
+    }
+    const snake = record.file_path
+    if (typeof snake === "string" && snake.length > 0) {
+        return snake
+    }
+    return undefined
 }
 
 export function isProtectedFilePath(filePath: string | undefined, patterns: string[]): boolean {

@@ -49,10 +49,10 @@ export {
 export { ADVISOR_SYSTEM_PROMPT, buildAdvisorPrompt, estimatePromptTokens } from "./prompt"
 
 // Response parsing
-export { parseAdvisorModelResponse, parseAdvisorResponse } from "./parse"
+export { parseAdvisorModelResponse } from "./parse"
 
 // Suggestion injection
-export { formatAdvisorSuggestion, buildSuggestionSummary } from "./inject"
+export { formatAdvisorSuggestion } from "./inject"
 
 // Feedback
 export {

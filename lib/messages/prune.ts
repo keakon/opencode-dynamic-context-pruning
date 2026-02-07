@@ -16,7 +16,8 @@ export function getPrunableContent(value: any, placeholder: string): string | nu
 }
 
 export const prune = (state: SessionState, messages: WithParts[]): void => {
-    for (const msg of messages) {
+    for (let i = 0; i < messages.length; i++) {
+        const msg = messages[i]
         if (isMessageCompacted(state, msg)) {
             continue
         }
@@ -30,14 +31,17 @@ export const prune = (state: SessionState, messages: WithParts[]): void => {
                 continue
             }
 
+            let modified = false
             if (part.state.status === "completed") {
                 if (part.tool === "question") {
                     if (getPrunableContent(part.state.input?.questions, PRUNED_QUESTIONS)) {
                         part.state.input.questions = PRUNED_QUESTIONS
+                        modified = true
                     }
                 } else {
                     if (getPrunableContent(part.state.output, PRUNED_OUTPUT)) {
                         part.state.output = PRUNED_OUTPUT
+                        modified = true
                     }
                 }
             } else if (part.state.status === "error") {
@@ -46,9 +50,17 @@ export const prune = (state: SessionState, messages: WithParts[]): void => {
                     for (const key of Object.keys(input)) {
                         if (getPrunableContent(input[key], PRUNED_INPUT)) {
                             input[key] = PRUNED_INPUT
+                            modified = true
                         }
                     }
                 }
+            }
+
+            if (
+                modified &&
+                (state.earliestModifiedMsgIndex === -1 || i < state.earliestModifiedMsgIndex)
+            ) {
+                state.earliestModifiedMsgIndex = i
             }
         }
     }

@@ -8,9 +8,8 @@ import * as fs from "fs/promises"
 import { existsSync } from "fs"
 import { homedir } from "os"
 import { join } from "path"
-import type { SessionState, SessionStats, AdvisorState } from "./types"
+import type { SessionState, SessionStats, AdvisorState, CacheMetrics } from "./types"
 import type { Logger } from "../logger"
-import { createAdvisorState } from "../advisor/types"
 
 export interface PersistedPrune {
     toolIds: string[]
@@ -27,6 +26,10 @@ export interface PersistedSessionState {
     stats: SessionStats
     aggressivePruneExhausted?: boolean
     advisor?: PersistedAdvisorState
+    prunableIdMap?: Array<[string, number]>
+    nextPrunableId?: number
+    compressSummaries?: Array<[string, string]>
+    cacheMetrics?: CacheMetrics
     lastUpdated: string
 }
 
@@ -65,6 +68,9 @@ export async function saveSessionState(
                 feedbackHistory: sessionState.advisor.feedbackHistory,
                 protectedKeys: Array.from(sessionState.advisor.protectedKeyExpiry.entries()),
             },
+            prunableIdMap: Array.from(sessionState.prunableIdMap.entries()),
+            nextPrunableId: sessionState.nextPrunableId,
+            cacheMetrics: sessionState.cacheMetrics,
             lastUpdated: new Date().toISOString(),
         }
 
@@ -105,6 +111,21 @@ export async function loadSessionState(
             return null
         }
 
+        if (state.prunableIdMap && !Array.isArray(state.prunableIdMap)) {
+            state.prunableIdMap = undefined
+        }
+        if (state.compressSummaries && !Array.isArray(state.compressSummaries)) {
+            state.compressSummaries = undefined
+        } else if (Array.isArray(state.compressSummaries)) {
+            state.compressSummaries = state.compressSummaries.filter(
+                (e) =>
+                    Array.isArray(e) &&
+                    e.length === 2 &&
+                    typeof e[0] === "string" &&
+                    typeof e[1] === "string",
+            )
+        }
+
         logger.info("Loaded session state from disk", {
             sessionId: sessionId,
         })
@@ -123,6 +144,12 @@ export interface AggregatedStats {
     totalTokens: number
     totalTools: number
     sessionCount: number
+    totalCacheRead: number
+    totalCacheWrite: number
+    totalInput: number
+    totalOutput: number
+    totalReasoning: number
+    totalRequests: number
 }
 
 export async function loadAllSessionStats(logger: Logger): Promise<AggregatedStats> {
@@ -130,6 +157,12 @@ export async function loadAllSessionStats(logger: Logger): Promise<AggregatedSta
         totalTokens: 0,
         totalTools: 0,
         sessionCount: 0,
+        totalCacheRead: 0,
+        totalCacheWrite: 0,
+        totalInput: 0,
+        totalOutput: 0,
+        totalReasoning: 0,
+        totalRequests: 0,
     }
 
     try {
@@ -150,6 +183,14 @@ export async function loadAllSessionStats(logger: Logger): Promise<AggregatedSta
                     result.totalTokens += state.stats.totalPruneTokens
                     result.totalTools += state.prune.toolIds.length
                     result.sessionCount++
+                }
+                if (state?.cacheMetrics) {
+                    result.totalCacheRead += state.cacheMetrics.totalCacheRead || 0
+                    result.totalCacheWrite += state.cacheMetrics.totalCacheWrite || 0
+                    result.totalInput += state.cacheMetrics.totalInput || 0
+                    result.totalOutput += state.cacheMetrics.totalOutput || 0
+                    result.totalReasoning += state.cacheMetrics.totalReasoning || 0
+                    result.totalRequests += state.cacheMetrics.requestCount || 0
                 }
             } catch {
                 // Skip invalid files

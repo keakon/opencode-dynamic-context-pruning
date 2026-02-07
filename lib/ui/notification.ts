@@ -69,7 +69,7 @@ export async function sendUnifiedNotification(
         return false
     }
 
-    const showDistillation = config.tools.extract.showDistillation
+    const showDistillation = config.tools.prune.showDistillation
 
     const message =
         config.pruneNotification === "minimal"

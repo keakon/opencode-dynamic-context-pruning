@@ -90,6 +90,7 @@ IMPORTANT:
 - IDs must be strings (e.g., "1" not 1)
 - extractItems is an array of [id, summary] tuples
 - Keep summaries concise but informative (under 100 chars)
+- Reasoning: one short sentence (≤50 chars) and never empty
 - Prefer returning empty suggestions over risking removal of needed content`
 
 /**
@@ -139,7 +140,9 @@ export function buildAdvisorPrompt(
 
     // Section 5: Tool outputs to analyze
     lines.push("## Tool Outputs to Analyze")
-    lines.push("(sorted by priority = tokens × age, showing top candidates)")
+    lines.push(
+        "(sorted by priority score = tokens × age_in_turns; higher = better pruning candidate)",
+    )
     lines.push("")
 
     // Limit tools to maxToolsInPrompt
@@ -198,23 +201,37 @@ export function buildAdvisorPrompt(
  */
 export function estimatePromptTokens(
     context: AnalysisContext,
-    config?: Pick<SmallModelAdvisorConfig, "maxToolsInPrompt">,
+    config?: Pick<
+        SmallModelAdvisorConfig,
+        "maxToolsInPrompt" | "sendContentPreview" | "contentPreviewLength"
+    >,
 ): number {
     // Estimate without actually building the prompt to save computation
     // System prompt is constant
     const systemTokens = Math.ceil(ADVISOR_SYSTEM_PROMPT.length / 4)
 
-    // Estimate user prompt: headers (~200 chars) + feedback (~100 chars) + tools
-    const headerTokens = 75
-    const feedbackTokens = context.feedbackSummary
-        ? Math.ceil(context.feedbackSummary.length / 4)
-        : 0
-
-    // Each tool contributes: header line (~80 chars) + token line (~20 chars) + preview (~200 chars)
-    const perToolTokens = 75
     const maxToolsInPrompt = config?.maxToolsInPrompt ?? context.tools.length
     const toolsInPrompt = Math.min(context.tools.length, maxToolsInPrompt)
-    const toolTokens = toolsInPrompt * perToolTokens
+    // NOTE: defaults must match SmallModelAdvisorConfig defaults in config.ts
+    const includePreview = config?.sendContentPreview ?? true
+    const previewLimit = config?.contentPreviewLength ?? 200
 
-    return systemTokens + headerTokens + feedbackTokens + toolTokens
+    let userChars = 0
+
+    userChars += 400
+    if (context.conversationSummary) userChars += context.conversationSummary.length
+    if (context.recentAssistantActivity) userChars += context.recentAssistantActivity.length
+    if (context.feedbackSummary) userChars += context.feedbackSummary.length
+
+    for (let i = 0; i < toolsInPrompt; i++) {
+        const tool = context.tools[i]
+        userChars += 100
+        userChars += tool.tool.length + tool.paramKey.length + String(tool.tokens).length
+        if (includePreview && tool.outputPreview) {
+            userChars += Math.min(tool.outputPreview.length, previewLimit)
+        }
+    }
+
+    const userTokens = Math.ceil(userChars / 4)
+    return systemTokens + userTokens
 }

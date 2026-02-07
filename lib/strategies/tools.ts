@@ -6,12 +6,10 @@ import { formatPruningResultForTool } from "../ui/utils"
 import { ensureSessionInitialized } from "../state"
 import { saveSessionState } from "../state/persistence"
 import type { Logger } from "../logger"
-import { loadPrompt } from "../prompts"
 import { calculateTokensSaved, getCurrentParams } from "./utils"
 import { addPruneToolIds } from "../shared-utils"
-
-const DISCARD_TOOL_DESCRIPTION = loadPrompt("discard-tool-spec")
-const EXTRACT_TOOL_DESCRIPTION = loadPrompt("extract-tool-spec")
+import { syncToolCache } from "../state/tool-cache"
+import { PRUNE_TOOL_SPEC } from "../prompts/prune-tool-spec"
 
 export interface PruneToolContext {
     client: any
@@ -21,99 +19,136 @@ export interface PruneToolContext {
     workingDirectory: string
 }
 
-// Shared logic for executing prune operations.
+// Unified logic for executing prune operations (discard + extract).
 async function executePruneOperation(
     ctx: PruneToolContext,
     toolCtx: { sessionID: string },
-    ids: string[],
-    toolName: string,
-    distillation?: string[],
+    discardIds: string[],
+    extractItems: [string, string][],
 ): Promise<string> {
     const { client, state, logger, config, workingDirectory } = ctx
     const sessionId = toolCtx.sessionID
 
+    const totalCount = discardIds.length + extractItems.length
     logger.info(
-        `${toolName} tool invoked with ${ids.length} IDs (listVersion=${state.prunableListVersion})`,
+        `Prune tool invoked with ${discardIds.length} discard + ${extractItems.length} extract IDs (listVersion=${state.prunableListVersion})`,
     )
 
-    // Use the snapshot of prunable tool IDs that was saved when <prunable-tools> was generated.
-    // This prevents ID shifting issues when new messages arrive between list generation and execution.
-    const prunableList = state.prunableToolIdList
-    if (!prunableList || prunableList.length === 0) {
-        throw new Error("No prunable tools available. Wait for a fresh <prunable-tools> list.")
-    }
-
-    const numericToolIds: number[] = []
-    for (const id of ids) {
-        if (!/^\d+$/.test(id)) {
-            throw new Error(`Invalid non-numeric ID: ${id}. Use numeric IDs from <prunable-tools>.`)
-        }
-        numericToolIds.push(Number(id))
-    }
-
-    // For extract operations, each ID has a positional distillation entry.
-    // Duplicate IDs would cause the second distillation to be silently lost after dedup,
-    // so reject them early (before any deduplication).
-    if (distillation && new Set(numericToolIds).size !== numericToolIds.length) {
-        throw new Error(
-            `Duplicate IDs detected in extract operation. Each ID must be unique when using distillation.`,
-        )
-    }
-
-    // For discard, deduplicate IDs; for extract, keep original order (already validated unique)
-    const processedNumericIds = distillation ? numericToolIds : [...new Set(numericToolIds)]
-
-    // Validate all IDs are within bounds of the snapshot
-    if (processedNumericIds.some((id) => id < 0 || id >= prunableList.length)) {
-        throw new Error(
-            `IDs out of range (valid: 0-${prunableList.length - 1}). Only use IDs from <prunable-tools>.`,
-        )
-    }
-
-    // Resolve numeric IDs to callIDs using the snapshot, and validate tool names match.
-    // This detects ID drift when the list changes between generation and execution.
-    const pruneToolIds: string[] = []
-    const mismatchedIds: string[] = []
-
-    for (const index of processedNumericIds) {
-        const entry = prunableList[index]
-        const currentMetadata = state.toolParameters.get(entry.callId)
-
-        // Verify the tool name still matches what was shown in the list
-        if (currentMetadata && currentMetadata.tool !== entry.tool) {
-            mismatchedIds.push(
-                `ID ${index}: expected "${entry.tool}", found "${currentMetadata.tool}"`,
-            )
-        }
-        pruneToolIds.push(entry.callId)
-    }
-
-    if (mismatchedIds.length > 0) {
-        throw new Error(
-            `Tool list has changed since generation. Mismatches: ${mismatchedIds.join("; ")}. ` +
-                `Please use IDs from the latest <prunable-tools> list.`,
-        )
-    }
-
-    // Filter out already-pruned tools (handles same-turn repeated calls)
-    const filteredPruneToolIds = pruneToolIds.filter((id) => !state.prune.toolIdSet.has(id))
-    if (filteredPruneToolIds.length === 0) {
-        throw new Error("All specified tools have already been pruned.")
-    }
-    if (filteredPruneToolIds.length < pruneToolIds.length) {
-        logger.info(
-            `Filtered ${pruneToolIds.length - filteredPruneToolIds.length} already-pruned tools`,
-        )
-    }
-
-    // Fetch messages for token calculation and session initialization
+    // --- Fetch messages early so we can sync tool cache before validation ---
     const messagesResponse = await client.session.messages({
         path: { id: sessionId },
     })
     const messages: WithParts[] = messagesResponse.data || messagesResponse
 
-    await ensureSessionInitialized(ctx.client, state, sessionId, logger, messages)
+    await ensureSessionInitialized(client, state, sessionId, logger, messages)
 
+    // Sync tool cache BEFORE validation to ensure fresh state
+    await syncToolCache(state, config, logger, messages)
+
+    // --- Validate prunable list snapshot ---
+    const prunableList = state.prunableToolIdList
+    if (!prunableList || prunableList.length === 0) {
+        throw new Error("No prunable tools available. Wait for a fresh <prunable-tools> list.")
+    }
+
+    // --- Parse and validate all numeric IDs ---
+    const allRawIds = [...discardIds, ...extractItems.map(([id]) => id)]
+    for (const id of allRawIds) {
+        if (!/^\d+$/.test(id)) {
+            throw new Error(`Invalid non-numeric ID: ${id}. Use numeric IDs from <prunable-tools>.`)
+        }
+    }
+
+    const discardNums = discardIds.map((id) => Number(id))
+    const extractNums = extractItems.map(([id]) => Number(id))
+
+    // Check for duplicate IDs within extract (distillation is positional, duplicates lose data)
+    if (new Set(extractNums).size !== extractNums.length) {
+        throw new Error(
+            "Duplicate IDs detected in extract. Each ID must be unique when using distillation.",
+        )
+    }
+
+    // Check for overlap between discard and extract
+    const discardIdSet = new Set(discardNums)
+    const extractIdSet = new Set(extractNums)
+    const overlap = [...discardIdSet].filter((id) => extractIdSet.has(id))
+    if (overlap.length > 0) {
+        throw new Error(
+            `IDs [${overlap.join(", ")}] appear in both discard and extract. Each ID must be in only one.`,
+        )
+    }
+
+    // Deduplicate discard IDs; extract already validated unique
+    const dedupedDiscardNums = [...new Set(discardNums)]
+
+    // Build extraction map: numericId -> distillation text
+    const extractionMap = new Map<number, string>()
+    for (const [id, dist] of extractItems) {
+        extractionMap.set(Number(id), dist)
+    }
+
+    // --- Resolve IDs against snapshot, skipping invalid ones ---
+    const allProcessedIds = [...dedupedDiscardNums, ...extractNums]
+    const validEntries: { numId: number; callId: string; distillation?: string }[] = []
+    const skippedIds: number[] = []
+    const mismatchedIds: string[] = []
+
+    for (const numId of allProcessedIds) {
+        const entry = prunableList.find((e) => e.id === numId)
+        if (!entry) {
+            skippedIds.push(numId)
+            continue
+        }
+
+        // Validate tool name still matches what was shown in the list
+        const currentMetadata = state.toolParameters.get(entry.callId)
+        if (currentMetadata && currentMetadata.tool !== entry.tool) {
+            mismatchedIds.push(
+                `ID ${numId}: expected "${entry.tool}", found "${currentMetadata.tool}"`,
+            )
+            continue
+        }
+
+        validEntries.push({
+            numId,
+            callId: entry.callId,
+            distillation: extractionMap.get(numId),
+        })
+    }
+
+    if (mismatchedIds.length > 0) {
+        logger.warn(`Skipped ${mismatchedIds.length} mismatched IDs: ${mismatchedIds.join("; ")}`)
+    }
+
+    if (validEntries.length === 0) {
+        const details: string[] = []
+        if (skippedIds.length > 0) details.push(`skipped: ${skippedIds.join(", ")}`)
+        if (mismatchedIds.length > 0) details.push(`mismatched: ${mismatchedIds.join("; ")}`)
+        throw new Error(
+            `All ${totalCount} IDs are invalid (${details.join("; ")}). Only use IDs from <prunable-tools>.`,
+        )
+    }
+
+    if (skippedIds.length > 0) {
+        logger.warn(`Skipped ${skippedIds.length} invalid IDs: ${skippedIds.join(", ")}`)
+    }
+
+    // --- Filter out already-pruned tools ---
+    const filteredEntries = validEntries.filter((e) => !state.prune.toolIdSet.has(e.callId))
+    if (filteredEntries.length === 0) {
+        throw new Error("All specified tools have already been pruned.")
+    }
+    if (filteredEntries.length < validEntries.length) {
+        logger.info(`Filtered ${validEntries.length - filteredEntries.length} already-pruned tools`)
+    }
+
+    const filteredPruneToolIds = filteredEntries.map((e) => e.callId)
+    const distillationList = filteredEntries
+        .filter((e) => e.distillation !== undefined)
+        .map((e) => e.distillation!)
+
+    // --- Execute pruning ---
     const currentParams = getCurrentParams(state, messages, logger)
     const newPruneToolIds = addPruneToolIds(state, filteredPruneToolIds)
 
@@ -137,48 +172,77 @@ async function executePruneOperation(
         toolMetadata,
         currentParams,
         workingDirectory,
-        distillation,
+        distillationList.length > 0 ? distillationList : undefined,
     )
 
     state.stats.totalPruneTokens += state.stats.pruneTokenCounter
     state.stats.pruneTokenCounter = 0
     state.nudgeCounter = 0
 
+    // Sync tool cache AFTER pruning to ensure cache reflects pruned state
+    await syncToolCache(state, config, logger, messages)
+
     saveSessionState(state, logger).catch((err) =>
         logger.error("Failed to persist state", { error: err.message }),
     )
 
-    return formatPruningResultForTool(newPruneToolIds, toolMetadata, workingDirectory)
+    let result = formatPruningResultForTool(
+        newPruneToolIds,
+        toolMetadata,
+        workingDirectory,
+        distillationList.length,
+    )
+
+    // Append skipped info to result message
+    const notes: string[] = []
+    if (skippedIds.length > 0) {
+        notes.push(`Skipped ${skippedIds.length} invalid ID(s): ${skippedIds.join(", ")}`)
+    }
+    if (mismatchedIds.length > 0) {
+        notes.push(`Skipped ${mismatchedIds.length} mismatched ID(s): ${mismatchedIds.join("; ")}`)
+    }
+    if (notes.length > 0) {
+        result += `\n\nNote: ${notes.join(". ")}`
+    }
+
+    return result
 }
 
-export function createDiscardTool(ctx: PruneToolContext): ReturnType<typeof tool> {
+export function createPruneTool(ctx: PruneToolContext): ReturnType<typeof tool> {
     return tool({
-        description: DISCARD_TOOL_DESCRIPTION,
+        description: PRUNE_TOOL_SPEC,
         args: {
-            ids: tool.schema
+            discard: tool.schema
                 .array(tool.schema.string())
-                .min(1)
+                .optional()
                 .describe("Numeric IDs from <prunable-tools> to discard"),
-        },
-        async execute(args, toolCtx) {
-            return executePruneOperation(ctx, toolCtx, args.ids, "Discard")
-        },
-    })
-}
-
-export function createExtractTool(ctx: PruneToolContext): ReturnType<typeof tool> {
-    return tool({
-        description: EXTRACT_TOOL_DESCRIPTION,
-        args: {
-            items: tool.schema
+            extract: tool.schema
                 .array(tool.schema.tuple([tool.schema.string(), tool.schema.string()]))
-                .min(1)
+                .optional()
                 .describe("Array of [id, distillation] tuples from <prunable-tools>"),
         },
         async execute(args, toolCtx) {
-            const ids = args.items.map(([id]) => id)
-            const distillation = args.items.map(([, dist]) => dist)
-            return executePruneOperation(ctx, toolCtx, ids, "Extract", distillation)
+            const discardIds = args.discard ?? []
+            const extractItems = (args.extract ?? []) as [string, string][]
+
+            // Manual validation: at least one param must be provided and non-empty
+            if (discardIds.length === 0 && extractItems.length === 0) {
+                return "Error: At least one of 'discard' or 'extract' must be provided and non-empty."
+            }
+
+            // Validate extract items are valid [id, content] tuples
+            for (const item of extractItems) {
+                if (
+                    !Array.isArray(item) ||
+                    item.length !== 2 ||
+                    typeof item[0] !== "string" ||
+                    typeof item[1] !== "string"
+                ) {
+                    return "Error: extract items must be an array of [id, content] tuples."
+                }
+            }
+
+            return executePruneOperation(ctx, toolCtx, discardIds, extractItems)
         },
     })
 }

@@ -120,8 +120,8 @@ Dynamic Context Pruning (DCP) 是 OpenCode AI 编辑器的插件，通过智能�
 9. prune()                  ─── 实际执行裁剪（替换为占位符）
 10. cleanupPruneState()     ─── 定期清理无效的 prune 状态（每 10 轮）
 11. cleanHistoricalPrunableTools() ─── 清理历史消息中的旧 prunable-tools 注入
-12. [可选] injectAdvisorSuggestion() ─── 注入小模型裁剪建议（如果有）
-13. insertPruneToolContext() ─── 按需注入可裁剪工具列表 + 提示（on_demand 模式）
+12. insertPruneToolContext() ─── 按需注入可裁剪工具列表 + 提示（on_demand 模式）
+13. [可选] injectAdvisorSuggestion() ─── 仅在列表已注入时，注入小模型裁剪建议
 14. [可选] triggerAdvisorAnalysis() ─── 异步触发小模型分析（如果满足条件）
 15. saveContext()            ─── 持久化日志
 ```
@@ -318,13 +318,18 @@ batch, write, edit, plan_enter, plan_exit
 
 #### 提示消息 (Nudge)
 
-三个紧急级别，语气逐渐强硬：
+三个紧急级别，语气逐渐增强但始终尊重模型自主决策：
 
-| 级别     | 触发条件                                          | 语气                                     | 是否注入列表 (on_demand 模式) |
-| -------- | ------------------------------------------------- | ---------------------------------------- | ----------------------------- |
-| normal   | N+ 工具（N = PRUNABLE_TOOL_THRESHOLD）或 频率触发 | SHOULD prune                             | ✅ 注入                       |
-| warn     | >= 60k tokens (warnThreshold)                     | WARNING... SHOULD prune immediately      | ✅ 注入                       |
-| critical | >= 100k tokens (criticalThreshold)                | CRITICAL... MUST prune NOW, 强制要求裁剪 | ✅ 注入                       |
+| 级别     | 触发条件                                          | 指令强度                      | 是否注入列表 (on_demand 模式) |
+| -------- | ------------------------------------------------- | ----------------------------- | ----------------------------- |
+| normal   | N+ 工具（N = PRUNABLE_TOOL_THRESHOLD）或 频率触发 | SHOULD — 可选建议             | ✅ 注入                       |
+| warn     | >= 60k tokens (warnThreshold)                     | SHOULD — 推荐裁剪             | ✅ 注入                       |
+| critical | >= 100k tokens (criticalThreshold)                | MUST — 强烈建议，提示性能影响 | ✅ 注入                       |
+
+**注入方式**：所有裁剪提示均以 user 消息注入（而非 assistant prefill），确保：
+
+- 模型将其视为建议而非自身知识，可自主决定是否采纳
+- 兼容所有模型（opus-4-6 不支持 assistant prefill）
 
 **设计理念**：系统不自动强制裁剪（自动策略除外），裁剪决策权在 AI：
 
@@ -513,10 +518,20 @@ strategies.purgeStaleOutputs: {
 ```
 1. 触发条件：tokens >= tokenThreshold(40k) && prunableCount >= minPrunableCount(5) && 无待处理建议
 2. 异步分析：创建临时会话 → 调用小模型 → 删除临时会话
-3. 建议注入：下一轮注入 <advisor-suggestion> 到上下文
+3. 建议注入：下一轮注入 <advisor-suggestion> 到上下文（仅当 prunable-tools 列表也被注入时）
 4. 主模型决策：接纳(调用 discard/extract) / 拒绝(忽略)
 5. 反馈学习：被拒绝的内容获得保护期，影响后续建议
+6. 过期清理：建议超过 SUGGESTION_EXPIRY_TURNS(2) 轮未消费则丢弃
 ```
+
+**列表注入与建议注入的协同**：
+
+Advisor 建议中包含 prunable-tools 列表中的 ID，因此建议必须与列表同时出现。为此：
+
+- `insertPruneToolContext` 先执行，返回列表是否被注入
+- 仅当列表已注入时，才注入 `<advisor-suggestion>`
+- 当存在待投递的 advisor 建议时，即使 nudge urgency 为 "none"，也强制注入列表（advisor 认为需要裁剪本身就是 "on demand" 的合理理由）
+- 这避免了"advisor 触发阈值(5工具) < 列表注入阈值(8工具)"窗口内 advisor 反复白跑的问题
 
 **为什么选择"建议"而非"直接执行"**：
 
@@ -1064,17 +1079,18 @@ distillation: ["摘要1", "摘要2"]  // 少了一个！
 
 `tools.settings.injectPrunableTools` 支持三种模式：
 
-| 模式      | 行为                                       | 缓存影响 |
-| --------- | ------------------------------------------ | -------- |
-| always    | 每次都注入 `<prunable-tools>` 列表         | 高       |
-| on_demand | nudge 触发时注入（包括 normal 级别，默认） | 中       |
-| on_warn   | 仅 warn/critical 时注入                    | 低       |
+| 模式      | 行为                                                        | 缓存影响 |
+| --------- | ----------------------------------------------------------- | -------- |
+| always    | 每次都注入 `<prunable-tools>` 列表                          | 高       |
+| on_demand | nudge 触发时注入，或 advisor 有待投递建议时强制注入（默认） | 中       |
+| on_warn   | 仅 warn/critical 时注入（advisor 待投递建议仍可强制注入）   | 低       |
 
 **为什么 on_demand 是最佳选择**：
 
 - **normal 级别注入**：当工具数量达到阈值时，模型可以主动裁剪
 - **与系统提示一致**：系统提示要求 "8+ outputs → SHOULD prune"，需要列表才能执行
 - **平衡缓存与功能**：仅在需要时注入，比 always 更节省缓存
+- **Advisor 协同**：当 advisor 有建议待投递时强制注入列表，确保建议中的 ID 可被解析
 
 ---
 
@@ -1210,6 +1226,5 @@ insertPruneToolContext()
         │           ▼
         │    生成 nudgeString
         │
-        └──► 注入到 messages
-             （根据模型类型选择注入方式）
+        └──► 注入到 messages（始终注入为 user 消息）
 ```

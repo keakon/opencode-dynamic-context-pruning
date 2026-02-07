@@ -96,15 +96,20 @@ export function formatPruningResultForTool(
     prunedIds: string[],
     toolMetadata: Map<string, ToolParameterEntry>,
     workingDirectory?: string,
+    extractedCount?: number,
 ): string {
-    const lines: string[] = []
-    lines.push(`Context pruning complete. Pruned ${prunedIds.length} tool outputs.`)
-    lines.push("")
+    const total = prunedIds.length
+    const extracted = extractedCount ?? 0
 
-    if (prunedIds.length > 0) {
-        lines.push(`Semantically pruned (${prunedIds.length}):`)
-        lines.push(...formatPrunedItemsList(prunedIds, toolMetadata, workingDirectory))
+    // Build tool-type counts breakdown
+    const toolCounts = new Map<string, number>()
+    for (const id of prunedIds) {
+        const meta = toolMetadata.get(id)
+        const toolName = meta?.tool ?? "unknown"
+        toolCounts.set(toolName, (toolCounts.get(toolName) ?? 0) + 1)
     }
+    const summary = [...toolCounts.entries()].map(([tool, count]) => `${count} ${tool}`).join(", ")
 
-    return lines.join("\n").trim()
+    const base = summary ? `Pruned ${total} items (${summary}).` : `Pruned ${total} items.`
+    return extracted > 0 ? `${base} Extracted ${extracted}.` : base
 }

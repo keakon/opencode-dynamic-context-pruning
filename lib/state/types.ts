@@ -22,12 +22,34 @@ export interface SessionStats {
     currentPrunableTokens: number
 }
 
+export interface TurnCacheEntry {
+    turn: number
+    cacheRead: number
+    cacheWrite: number
+    input: number
+    output: number
+    reasoning: number
+    timestamp: string
+}
+
+export interface CacheMetrics {
+    totalCacheRead: number
+    totalCacheWrite: number
+    totalInput: number
+    totalOutput: number
+    totalReasoning: number
+    requestCount: number
+    turnHistory: TurnCacheEntry[]
+    lastProcessedMsgId?: string
+}
+
 export interface Prune {
     toolIds: string[]
     toolIdSet: Set<string>
 }
 
 export interface PrunableToolEntry {
+    id: number
     callId: string
     tool: string
 }
@@ -50,7 +72,13 @@ export interface SessionState {
     toolTokensCacheHash: string | undefined // Hash for invalidation (msgLength_lastMsgId_lastCompaction)
     prunableToolIdList: PrunableToolEntry[] | null // Snapshot with callId and tool name for validation
     prunableListVersion: number // Snapshot version for internal tracking
+    nextPrunableId: number // Auto-increment counter for stable prunable IDs
+    prunableIdMap: Map<string, number>
     aggressivePruneExhausted: boolean
+    // Tracks the first message index modified in the current request cycle.
+    // Used for selective cleaning of stale <prunable-tools> blocks in cache-invalidated regions.
+    earliestModifiedMsgIndex: number
+    cacheMetrics: CacheMetrics
     advisor: AdvisorState
 }
 

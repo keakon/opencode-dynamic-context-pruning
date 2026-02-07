@@ -95,12 +95,8 @@ DCP uses its own config file:
             // Additional tools to protect from pruning
             "protectedTools": [],
         },
-        // Removes tool content from context without preservation (for completed tasks or noise)
-        "discard": {
-            "enabled": true,
-        },
-        // Distills key findings into preserved knowledge before removing raw content
-        "extract": {
+        // LLM-driven pruning: discard or extract key findings before removing raw content
+        "prune": {
             "enabled": true,
             // Show distillation content as an ignored message notification
             "showDistillation": false,

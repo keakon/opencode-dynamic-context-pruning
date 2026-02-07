@@ -110,9 +110,25 @@ function analyzeTokens(state: SessionState, messages: WithParts[]): TokenBreakdo
     const userTextParts: string[] = []
     const toolInputParts: string[] = []
     const toolOutputParts: string[] = []
+    const foundToolIds = new Set<string>()
     let firstUserText = ""
     let foundFirstUser = false
 
+    // First pass: collect unique tool IDs from ALL messages (including compacted)
+    for (const msg of messages) {
+        const parts = Array.isArray(msg.parts) ? msg.parts : []
+        for (const part of parts) {
+            if (part.type === "tool") {
+                const toolPart = part as ToolPart
+                if (toolPart.callID) {
+                    foundToolIds.add(toolPart.callID)
+                }
+            }
+        }
+    }
+    breakdown.toolCount = foundToolIds.size
+
+    // Second pass: collect tokens from non-compacted messages only
     for (const msg of messages) {
         if (isMessageCompacted(state, msg)) continue
         if (msg.info.role === "user" && isIgnoredUserMessage(msg)) continue
@@ -128,7 +144,6 @@ function analyzeTokens(state: SessionState, messages: WithParts[]): TokenBreakdo
                 }
             } else if (part.type === "tool") {
                 const toolPart = part as ToolPart
-                breakdown.toolCount++
 
                 if (toolPart.state?.input) {
                     const inputStr =

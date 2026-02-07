@@ -1,4 +1,4 @@
-import type { SessionState, ToolParameterEntry, WithParts } from "./types"
+import type { SessionState, ToolParameterEntry, CacheMetrics, WithParts } from "./types"
 import type { Logger } from "../logger"
 import { loadSessionState } from "./persistence"
 import { getLastUserMessage, isMessageCompacted } from "../shared-utils"
@@ -49,6 +49,8 @@ export const checkSession = async (
         state.toolTokensCacheHash = undefined
         state.prunableToolIdList = null
         state.prunableListVersion = 0
+        state.nextPrunableId = 0
+        state.prunableIdMap = new Map()
 
         // Clear advisor state on compaction (per spec)
         state.advisor.pendingSuggestion = null
@@ -57,6 +59,16 @@ export const checkSession = async (
         // Rebuild protectedKeyExpiry based on rejectCount after compaction (per docs 6.2)
         // This ensures protection periods remain valid when turn numbers reset
         const newTurn = countTurns(state, messages)
+
+        // Reset lastProcessedMsgId on compaction since old messages are gone,
+        // but set it to the last current assistant message to avoid re-counting
+        for (let i = messages.length - 1; i >= 0; i--) {
+            if (messages[i].info.role === "assistant") {
+                state.cacheMetrics.lastProcessedMsgId = messages[i].info.id
+                break
+            }
+        }
+
         for (const [paramKey, info] of state.advisor.protectedKeyExpiry) {
             // Rebuild protection: rejectCount * 3 turns from new turn
             const newExpiry = newTurn + info.rejectCount * 3
@@ -72,6 +84,18 @@ export const checkSession = async (
     }
 
     state.currentTurn = countTurns(state, messages)
+}
+
+function createDefaultCacheMetrics(): CacheMetrics {
+    return {
+        totalCacheRead: 0,
+        totalCacheWrite: 0,
+        totalInput: 0,
+        totalOutput: 0,
+        totalReasoning: 0,
+        requestCount: 0,
+        turnHistory: [],
+    }
 }
 
 export function createSessionState(): SessionState {
@@ -100,7 +124,11 @@ export function createSessionState(): SessionState {
         toolTokensCacheHash: undefined,
         prunableToolIdList: null,
         prunableListVersion: 0,
+        nextPrunableId: 0,
+        prunableIdMap: new Map(),
         aggressivePruneExhausted: false,
+        earliestModifiedMsgIndex: -1,
+        cacheMetrics: createDefaultCacheMetrics(),
         advisor: createAdvisorState(),
     }
 }
@@ -124,7 +152,11 @@ export function resetSessionState(state: SessionState): void {
     state.toolTokensCacheHash = fresh.toolTokensCacheHash
     state.prunableToolIdList = fresh.prunableToolIdList
     state.prunableListVersion = fresh.prunableListVersion
+    state.nextPrunableId = fresh.nextPrunableId
+    state.prunableIdMap = fresh.prunableIdMap
     state.aggressivePruneExhausted = fresh.aggressivePruneExhausted
+    state.earliestModifiedMsgIndex = fresh.earliestModifiedMsgIndex
+    state.cacheMetrics = createDefaultCacheMetrics()
     state.advisor = createAdvisorState()
 }
 
@@ -169,6 +201,49 @@ export async function ensureSessionInitialized(
     }
     state.aggressivePruneExhausted = persisted.aggressivePruneExhausted ?? false
 
+    // Load cache metrics if persisted
+    if (persisted.cacheMetrics) {
+        const cm = persisted.cacheMetrics
+        state.cacheMetrics = {
+            totalCacheRead: cm.totalCacheRead || 0,
+            totalCacheWrite: cm.totalCacheWrite || 0,
+            totalInput: cm.totalInput || 0,
+            totalOutput: cm.totalOutput || 0,
+            totalReasoning: cm.totalReasoning || 0,
+            requestCount: cm.requestCount || 0,
+            turnHistory: Array.isArray(cm.turnHistory) ? cm.turnHistory : [],
+            lastProcessedMsgId: cm.lastProcessedMsgId,
+        }
+    }
+
+    const prunableIdMap = new Map<string, number>()
+    if (Array.isArray(persisted.prunableIdMap)) {
+        for (const entry of persisted.prunableIdMap) {
+            if (
+                Array.isArray(entry) &&
+                entry.length === 2 &&
+                typeof entry[0] === "string" &&
+                typeof entry[1] === "number"
+            ) {
+                prunableIdMap.set(entry[0], entry[1])
+            }
+        }
+    }
+    let nextPrunableId = typeof persisted.nextPrunableId === "number" ? persisted.nextPrunableId : 0
+    if (prunableIdMap.size > 0) {
+        let maxId = -1
+        for (const value of prunableIdMap.values()) {
+            if (value > maxId) {
+                maxId = value
+            }
+        }
+        if (nextPrunableId <= maxId) {
+            nextPrunableId = maxId + 1
+        }
+    }
+    state.prunableIdMap = prunableIdMap
+    state.nextPrunableId = nextPrunableId
+
     // Load advisor state if persisted
     if (persisted.advisor) {
         const persistedAdvisor = persisted.advisor as any
@@ -205,8 +280,7 @@ export async function ensureSessionInitialized(
                     const info = value as { until: number; rejectCount: number }
                     expiryMap.set(key, {
                         until: typeof info.until === "number" ? info.until : state.currentTurn + 3,
-                        rejectCount:
-                            typeof info.rejectCount === "number" ? info.rejectCount : 1,
+                        rejectCount: typeof info.rejectCount === "number" ? info.rejectCount : 1,
                     })
                 }
             }

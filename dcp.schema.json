@@ -4,6 +4,7 @@
     "title": "DCP Plugin Configuration",
     "description": "Configuration schema for the OpenCode Dynamic Context Pruning plugin",
     "type": "object",
+    "allowTrailingCommas": true,
     "additionalProperties": false,
     "properties": {
         "$schema": {
@@ -126,11 +127,12 @@
                                 "task",
                                 "todowrite",
                                 "todoread",
-                                "discard",
-                                "extract",
+                                "prune",
                                 "batch",
                                 "write",
-                                "edit"
+                                "edit",
+                                "plan_enter",
+                                "plan_exit"
                             ],
                             "description": "Tool names that should be protected from automatic pruning"
                         },
@@ -142,27 +144,15 @@
                         }
                     }
                 },
-                "discard": {
+                "prune": {
                     "type": "object",
-                    "description": "Configuration for the discard tool",
+                    "description": "Configuration for the prune tool (discard or extract key findings)",
                     "additionalProperties": false,
                     "properties": {
                         "enabled": {
                             "type": "boolean",
                             "default": true,
-                            "description": "Enable the discard tool"
-                        }
-                    }
-                },
-                "extract": {
-                    "type": "object",
-                    "description": "Configuration for the extract tool",
-                    "additionalProperties": false,
-                    "properties": {
-                        "enabled": {
-                            "type": "boolean",
-                            "default": true,
-                            "description": "Enable the extract tool"
+                            "description": "Enable the prune tool"
                         },
                         "showDistillation": {
                             "type": "boolean",
@@ -197,11 +187,12 @@
                                 "task",
                                 "todowrite",
                                 "todoread",
-                                "discard",
-                                "extract",
+                                "prune",
                                 "batch",
                                 "write",
-                                "edit"
+                                "edit",
+                                "plan_enter",
+                                "plan_exit"
                             ],
                             "description": "Tool names excluded from deduplication"
                         }
@@ -243,11 +234,12 @@
                                 "task",
                                 "todowrite",
                                 "todoread",
-                                "discard",
-                                "extract",
+                                "prune",
                                 "batch",
                                 "write",
-                                "edit"
+                                "edit",
+                                "plan_enter",
+                                "plan_exit"
                             ],
                             "description": "Tool names excluded from error purging"
                         }

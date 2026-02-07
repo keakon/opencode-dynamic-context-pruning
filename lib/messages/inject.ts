@@ -4,55 +4,45 @@ import type { PluginConfig } from "../config"
 import { PRUNABLE_TOOL_THRESHOLD } from "../config"
 import type { UserMessage } from "@opencode-ai/sdk/v2"
 import { getNudgePrompt } from "../prompts/nudge"
-import {
-    extractParameterKey,
-    buildToolIdList,
-    createSyntheticAssistantMessage,
-    createSyntheticUserMessage,
-    createSyntheticToolPart,
-    isDeepSeekOrKimi,
-    isIgnoredUserMessage,
-} from "./utils"
+import { extractParameterKey, buildToolIdList, createSyntheticUserMessage } from "./utils"
 import { isToolCallProtected } from "../protected-file-patterns"
 import { getLastUserMessage } from "../shared-utils"
 import { truncate } from "../ui/utils"
 import { getToolTokens } from "../strategies/utils"
 import type { AdvisorState } from "../advisor/types"
-import { shouldSuppressNudge } from "../advisor/trigger"
+import { shouldSuppressNudge, hasSuggestionToInject } from "../advisor/trigger"
 
 type NudgeUrgency = "none" | "normal" | "warn" | "critical"
 
 /**
  * Regex to match <prunable-tools>...</prunable-tools> blocks and trailing whitespace.
+ * Handles both versioned (<prunable-tools version="N">) and unversioned blocks.
  * Uses non-greedy matching to handle multiple blocks correctly.
  */
-const PRUNABLE_TOOLS_REGEX = /<prunable-tools>[\s\S]*?<\/prunable-tools>\s*/g
+const PRUNABLE_TOOLS_REGEX = /<prunable-tools[^>]*>[\s\S]*?<\/prunable-tools>\s*/g
 
 /**
- * Clean historical <prunable-tools> content from messages.
+ * Clean stale <prunable-tools> blocks from messages in the cache-invalidated region.
  *
- * Each request injects a new prunable-tools list, but the old injections
- * remain in historical messages. Since the content changes each time
- * (tool count, IDs, etc.), this breaks Anthropic's prefix caching mechanism,
- * causing cache_creation to grow continuously while cache_read stays low.
+ * After prune() or compressConfirmations() modify a message, all messages from that
+ * point onwards lose their prompt cache anyway. We can safely clean stale
+ * <prunable-tools> blocks in this region without additional cache cost.
  *
- * By cleaning historical injections, we keep message content stable and
- * maximize prompt cache hit rate.
+ * Messages before fromIndex are untouched to preserve cache.
+ * The last message is also skipped (it will receive a fresh injection).
  */
-const cleanHistoricalPrunableTools = (messages: WithParts[]): void => {
-    // Skip if there are fewer than 2 messages (nothing historical to clean)
+const cleanStalePrunableBlocks = (messages: WithParts[], fromIndex: number): void => {
     if (messages.length < 2) {
         return
     }
 
-    // Iterate all messages except the last one (which will receive new injection)
-    for (let i = 0; i < messages.length - 1; i++) {
+    const endIndex = messages.length - 1
+    for (let i = fromIndex; i < endIndex; i++) {
         const msg = messages[i]
         let modified = false
 
         for (const part of msg.parts) {
             if (part.type === "text" && typeof part.text === "string") {
-                // Reset regex lastIndex for correct matching with global flag
                 PRUNABLE_TOOLS_REGEX.lastIndex = 0
                 const newText = part.text.replace(PRUNABLE_TOOLS_REGEX, "").trim()
                 if (newText !== part.text) {
@@ -63,7 +53,6 @@ const cleanHistoricalPrunableTools = (messages: WithParts[]): void => {
         }
 
         if (modified) {
-            // Remove empty text parts to avoid affecting cache hash
             msg.parts = msg.parts.filter((part) => {
                 if (part.type === "text" && typeof part.text === "string") {
                     return part.text.length > 0
@@ -79,21 +68,11 @@ const getNudgeString = (config: PluginConfig, urgency: NudgeUrgency): string => 
         return ""
     }
 
-    const discardEnabled = config.tools.discard.enabled
-    const extractEnabled = config.tools.extract.enabled
-
-    let mode: "both" | "discard" | "extract"
-    if (discardEnabled && extractEnabled) {
-        mode = "both"
-    } else if (discardEnabled) {
-        mode = "discard"
-    } else if (extractEnabled) {
-        mode = "extract"
-    } else {
+    if (!config.tools.prune.enabled) {
         return ""
     }
 
-    return getNudgePrompt(mode, urgency)
+    return getNudgePrompt(urgency)
 }
 
 /**
@@ -155,8 +134,10 @@ const getNudgeUrgency = (
     return "none"
 }
 
-const wrapPrunableTools = (content: string): string => `<prunable-tools>
-The following tools are available for pruning. Only IDs listed here are valid.
+const wrapPrunableTools = (
+    content: string,
+    version: number,
+): string => `<prunable-tools version="${version}">
 ${content}
 </prunable-tools>`
 
@@ -231,25 +212,39 @@ const buildPrunableToolsList = (
     // Increment snapshot version for internal tracking and debugging.
     state.prunableListVersion++
 
-    // Save snapshot with both callId and tool name for validation.
+    // Save snapshot with callId, tool name, and auto-increment ID for validation.
     // This allows detecting ID drift when the list changes between generation and execution.
-    state.prunableToolIdList = prunableEntries.map((e) => ({
-        callId: e.id,
-        tool: e.tool,
-    }))
+    const currentCallIds = new Set<string>()
+    state.prunableToolIdList = prunableEntries.map((e) => {
+        currentCallIds.add(e.id)
+        const existing = state.prunableIdMap.get(e.id)
+        const id = existing === undefined ? state.nextPrunableId++ : existing
+        if (existing === undefined) {
+            state.prunableIdMap.set(e.id, id)
+        }
+        return {
+            id,
+            callId: e.id,
+            tool: e.tool,
+        }
+    })
+    for (const key of state.prunableIdMap.keys()) {
+        if (!currentCallIds.has(key)) {
+            state.prunableIdMap.delete(key)
+        }
+    }
 
-    const lines: string[] = prunableEntries.map((entry, i) => {
-        const description = entry.paramKey
-            ? `${entry.tool}, ${truncate(entry.paramKey, 50)}`
-            : entry.tool
-        return `${i}: ${description}`
+    const lines: string[] = state.prunableToolIdList.map((entry, i) => {
+        const paramKey = prunableEntries[i].paramKey
+        const description = paramKey ? `${entry.tool}, ${truncate(paramKey, 50)}` : entry.tool
+        return `${entry.id}: ${description}`
     })
 
     logger.debug(
         `Found ${prunableEntries.length} prunable tools (version=${state.prunableListVersion})`,
     )
 
-    return wrapPrunableTools(lines.join("\n"))
+    return wrapPrunableTools(lines.join("\n"), state.prunableListVersion)
 }
 
 export const insertPruneToolContext = (
@@ -258,18 +253,14 @@ export const insertPruneToolContext = (
     logger: Logger,
     messages: WithParts[],
     advisorState?: AdvisorState,
-): void => {
-    if (!config.tools.discard.enabled && !config.tools.extract.enabled) {
-        return
+): boolean => {
+    if (!config.tools.prune.enabled) {
+        return false
     }
-
-    // Clean historical prunable-tools injections to maintain stable message content
-    // for better Anthropic Prompt Caching hit rate
-    cleanHistoricalPrunableTools(messages)
 
     const prunableToolsList = buildPrunableToolsList(state, config, logger, messages)
     if (!prunableToolsList) {
-        return
+        return false
     }
 
     const prunableToolCount = state.prunableToolIdList?.length ?? 0
@@ -277,12 +268,25 @@ export const insertPruneToolContext = (
 
     // On-demand injection: skip when no nudge is triggered
     // on_warn mode: skip unless warn or critical (more cache-friendly)
+    // Exception: always inject when advisor has pending suggestions, so the model can see the IDs
     const injectMode = config.tools.settings.injectPrunableTools ?? "on_demand"
-    if (injectMode === "on_demand" && nudgeUrgency === "none") {
-        return
+    const advisorNeedsList = advisorState ? hasSuggestionToInject(advisorState) : false
+    if (injectMode === "on_demand" && nudgeUrgency === "none" && !advisorNeedsList) {
+        return false
     }
-    if (injectMode === "on_warn" && (nudgeUrgency === "none" || nudgeUrgency === "normal")) {
-        return
+    if (
+        injectMode === "on_warn" &&
+        (nudgeUrgency === "none" || nudgeUrgency === "normal") &&
+        !advisorNeedsList
+    ) {
+        return false
+    }
+
+    // Selective cleaning: only clean stale <prunable-tools> blocks in messages
+    // that are already cache-invalidated (at or after earliestModifiedMsgIndex).
+    // Messages before that index are untouched to preserve prompt cache.
+    if (state.earliestModifiedMsgIndex >= 0) {
+        cleanStalePrunableBlocks(messages, state.earliestModifiedMsgIndex)
     }
 
     logger.debug("prunable-tools: \n" + prunableToolsList)
@@ -307,34 +311,15 @@ export const insertPruneToolContext = (
 
     const lastUserMessage = getLastUserMessage(messages)
     if (!lastUserMessage) {
-        return
+        return false
     }
 
-    const userInfo = lastUserMessage.info as UserMessage
-    const variant = state.variant ?? userInfo.variant
+    const variant = state.variant ?? (lastUserMessage.info as UserMessage).variant
 
-    let lastNonIgnoredMessage: WithParts | undefined
-    for (let i = messages.length - 1; i >= 0; i--) {
-        const msg = messages[i]
-        if (!(msg.info.role === "user" && isIgnoredUserMessage(msg))) {
-            lastNonIgnoredMessage = msg
-            break
-        }
-    }
-
-    if (!lastNonIgnoredMessage || lastNonIgnoredMessage.info.role === "user") {
-        messages.push(createSyntheticUserMessage(lastUserMessage, prunableToolsContent, variant))
-    } else {
-        const providerID = userInfo.model?.providerID || ""
-        const modelID = userInfo.model?.modelID || ""
-
-        if (isDeepSeekOrKimi(providerID, modelID)) {
-            const toolPart = createSyntheticToolPart(lastNonIgnoredMessage, prunableToolsContent)
-            lastNonIgnoredMessage.parts.push(toolPart)
-        } else {
-            messages.push(
-                createSyntheticAssistantMessage(lastUserMessage, prunableToolsContent, variant),
-            )
-        }
-    }
+    // Always inject as user message instead of assistant prefill.
+    // - opus-4-6 does not support assistant prefill (last message must be user role)
+    // - Semantically, pruning hints are suggestions, not model self-knowledge
+    // - User messages allow the model to make autonomous decisions
+    messages.push(createSyntheticUserMessage(lastUserMessage, prunableToolsContent, variant))
+    return true
 }
